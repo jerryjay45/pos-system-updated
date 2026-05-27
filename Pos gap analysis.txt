@@ -1,0 +1,265 @@
+# POS Migration — Gap Analysis
+**Old project:** `pos-system` (Python/PyQt6, monolithic UI files)
+**New project:** `merchant_pos copy` (Python/PyQt6, modular structure)
+
+---
+
+## ✅ What's Already in the New Project
+
+| Feature | Old location | New location | Notes |
+|---|---|---|---|
+| 4-database architecture | `db/models.py` | `core/db_*.py` | Cleaner — each DB has its own module |
+| Products CRUD | `supervisor_dashboard.py` | `core/db_products.py` + `supervisor_window.py` | New version uses proper service functions |
+| Product groups | `models.py` | `core/db_products.py` | `groups` table |
+| Product aliases | `aliases` table | `product_alias` table | Renamed, same concept |
+| Discount levels (2 tiers) | `discount_levels` table | `discount_level1/2` columns on product | Moved from separate table to product columns |
+| GCT per item flag | `gct_applicable` | `gct_applicable` | Same |
+| Case products | `is_case`, `case_quantity` | `is_case`, `case_qty`, `case_product_id` | New adds direct FK to parent product |
+| User roles (cashier/supervisor/manager) | `users.db` | `core/db_users.py` | Same 3 roles |
+| Password hashing | `hashlib` (no salt) | `hashlib` + `secrets.token_hex` salt | **New is more secure** |
+| Sessions (cashier login) | `sessions` table | `sessions` table in users.db | Same concept |
+| Transactions / receipts | `transactions` + `transaction_items` | `receipts` + `receipt_items` | Renamed, same structure |
+| Void / refund records | `status` field on transaction | `refunds` table + status field | New has dedicated `refunds` table — better |
+| F1–F8 quick keys | `quick_keys` table in products.db | `quick_keys` table in config.db | Moved to config DB |
+| Business info | `business_info` table | `business` table in config.db | Same |
+| Settings (GCT, discounts, printer) | Separate columns in `business_info` | `settings` key/value table | New is more flexible |
+| Cashier dashboard | `ui/cashier_dashboard.py` | `ui/cashier/cashier_window.py` | Modular folder structure |
+| 3-cart system | `cashier_dashboard.py` | `cashier_window.py` | Same |
+| Barcode + name search | `cashier_dashboard.py` | `cashier_window.py` | Same |
+| Checkout dialog | `ui/checkout_dialog.py` | `ui/cashier/checkout_dialog.py` | New adds card + split payment |
+| Void dialog (with supervisor PIN) | inline in `supervisor_dashboard.py` | `ui/cashier/void_dialog.py` | Extracted to own file |
+| Misc item dialog | — | `ui/cashier/misc_dialog.py` | **New feature** — add unlisted items |
+| Supervisor dashboard | `ui/supervisor_dashboard.py` | `ui/supervisor/supervisor_window.py` | |
+| Reports tab (sessions) | supervisor | supervisor | Same |
+| Transactions tab | supervisor | supervisor | Same |
+| Void/refund tab | supervisor | supervisor | Same |
+| Quick keys tab | supervisor | supervisor | Same |
+| Manager dashboard | `ui/manager_dashboard.py` | `ui/manager/manager_window.py` | Inherits from `SupervisorWindow` — cleaner |
+| User management | manager | manager | Same |
+| Business info editing | manager | manager | New adds email + tax_id fields |
+| GCT rate setting | manager | manager | Same |
+| Discount level config | manager | manager | Same |
+| Product groups + profit % | manager | manager | Same |
+| Printer settings | manager | manager | Same |
+| PostgreSQL config | manager | manager | Stored in config.db now (was config.py) |
+| Login window | `ui/login_window.py` | `ui/login_window.py` | New has zoom buttons, password show/hide |
+| Theme system | `ui/theme.py` | `ui/shared/theme.py` | Moved to shared/ |
+| Receipt text saving to file | `printing/` | `utils/print_manager.py` | New saves `.txt` to `receipts/` folder |
+| Label directory | — | `labels/` folder | Created at startup |
+| WAL mode on SQLite | ✗ | ✅ `PRAGMA journal_mode=WAL` | **New is better** |
+| Thread-safe DB connections | ✗ | ✅ `threading.local()` | **New is better** |
+| High-DPI support | ✗ | ✅ `PassThrough` policy | **New is better** |
+
+---
+
+## ❌ What's Missing from the New Project
+
+These features exist in the old project but have **not yet been ported** to the new one.
+
+### 1. 🖨️ Thermal Printer Driver
+**Old:** `printing/thermal_printer.py` — full ESC/POS driver
+**New:** `utils/print_manager.py` only handles standard system printers (QPrinter)
+
+Missing:
+- `auto_detect_printer()` — USB → serial → network auto-detection
+- `_try_usb(vendor_id, product_id)` — USB connection (Epson VID default)
+- `_try_serial(port)` — serial/RS-232 connection
+- `_try_network(host)` — TCP/IP connection
+- `print_text_thermal(text, cut=True)` — ESC/POS send + paper cut
+- Thermal connection type stored in settings (`thermal_connection`, `thermal_port`, `thermal_vendor_id`, `thermal_product_id`)
+
+**Action:** Port `printing/thermal_printer.py` → `utils/thermal_printer.py`
+
+---
+
+### 2. 🧾 Receipt Formatter (Thermal Layout)
+**Old:** `printing/formatter.py` — formats receipt text for 42-char thermal rolls
+**New:** `utils/print_manager.py` has a basic `_format_receipt_text()` but it lacks:
+
+Missing:
+- `format_void(data, width)` — void notice receipt
+- `format_refund(data, width)` — refund receipt
+- `format_session(data, width)` — session summary printout
+- `_format_items_gct_column(items, width)` — 42-char layout with GCT column per item
+- `_format_items_simple(items, width)` — simple layout without GCT breakdown
+- Receipt layout choice (`gct_column` vs `simple`) stored in settings
+
+**Action:** Port `printing/formatter.py` → `utils/receipt_formatter.py`
+
+---
+
+### 3. 🧾 Receipt Builder (DB → Print Data)
+**Old:** `printing/receipt_builder.py` — fetches all data from DB and builds print dicts
+**New:** `utils/print_manager.py` does this inline but is missing:
+
+Missing:
+- `build_void_receipt(transaction_id, reason, voided_by)` — void notice data
+- `build_refund_receipt(...)` — refund receipt data
+- `build_session_receipt(session_id)` — session summary data
+
+**Action:** Port `printing/receipt_builder.py` → `utils/receipt_builder.py`
+
+---
+
+### 4. 🖨️ Print Manager — Void, Refund, Session
+**Old:** `printing/print_manager.py`
+**New:** `utils/print_manager.py` only has `print_receipt()` and `print_label()`
+
+Missing functions:
+- `reprint_receipt(transaction_id, parent)` — reprint without cash/change
+- `print_void(transaction_id, reason, supervisor_name, parent)` — print void notice
+- `print_refund(transaction_id, refund_items, refund_total, reason, refunded_by, parent)` — print refund receipt
+- `print_session(session_id, parent)` — print session summary
+- `_dispatch(text, printer_type, ...)` — route to thermal vs normal
+
+**Action:** Extend `utils/print_manager.py` with these functions
+
+---
+
+### 5. 🏷️ Shelf Label Maker
+**Old:** `supervisor_dashboard.py` → Labels tab with full label designer + printer
+**New:** `labels/` folder exists but is empty. `utils/print_manager.py` has `print_label()` stub.
+
+Missing:
+- Label designer UI (product list with qty selectors, preview panel)
+- `_label_load_products(query)` — searchable product list for label selection
+- `_label_select_all() / _label_clear_selection()`
+- `_label_update_preview()` — live label preview widget
+- `_label_get_siblings(pid)` — get alias siblings for multi-barcode labels
+- `_label_print(save_pdf=False)` — print or save PDF
+- `_draw_label(painter, rect, product, options, preview)` — render label with barcode
+- `_draw_barcode_bars(painter, rect, barcode_text)` — barcode rendering
+- Label options: width/height mm, show price, show barcode, font size
+
+**Action:** Port Labels tab from `supervisor_dashboard.py` → `ui/supervisor/labels_tab.py`
+
+---
+
+### 6. 🔄 PostgreSQL Bidirectional Sync
+**Old:** `db/sync.py` — full `SyncManager` class with push/pull/sync
+**New:** PostgreSQL config is stored and there's a `_pg_test()` in manager UI, but no actual sync engine.
+
+Missing:
+- `SyncManager` class with `push_all()`, `pull_all()`, `sync()`
+- `_mirror_schema(pg_conn, table, sqlite_db_path)` — replicates SQLite schema to PG
+- `_push_table / _pull_table` — per-table sync
+- `sync_log` table in checkout.db for sync history
+- `sync_id` UUID and `synced_at` columns on synced tables
+- Sync UI panel in manager (progress bar, log output, push/pull/sync buttons)
+
+**Action:** Port `db/sync.py` → `core/db_sync.py` and add Sync tab to manager window
+
+---
+
+### 7. 📦 DBF Stock Import
+**Old:** `import_stock_dbf.py` + Manager → DBF tab
+**New:** Not present at all.
+
+Missing:
+- `import_stock_dbf.py` — reads legacy `.dbf` files and imports to products.db
+- Manager DBF tab with file picker, progress bar, import log
+- Background thread with progress signals
+
+**Action:** Port `import_stock_dbf.py` and the DBF tab from `manager_dashboard.py`
+
+---
+
+### 8. 🔧 First-Run Setup Wizard
+**Old:** `ui/setup_wizard.py` — multi-step wizard shown on first launch
+**New:** `init_db()` in `db_users.py` silently seeds a default `manager`/`admin` account.
+
+The old wizard guided the user through:
+1. Welcome screen
+2. Create manager account (choose username + password)
+3. Set business name + GCT rate
+
+**Action:** Either port `ui/setup_wizard.py` or keep the silent seed (acceptable if you document the default credentials).
+
+---
+
+### 9. 📊 Cashing Sessions (Supervisor-Managed Trading Periods)
+**Old:** `cashing_sessions` table — supervisor opens/closes a period for each cashier; tracks totals per period
+**New:** Only `sessions` table (one per login). No supervisor-managed cashing sessions.
+
+Missing:
+- `cashing_sessions` table in checkout.db (or users.db)
+- Open/close session buttons in supervisor Reports tab
+- Session totals cards (total sales, GCT, discount, transaction count)
+- `_rpt_open_session()` / `_rpt_close_session()` properly write to `cashing_sessions`
+
+> **Note:** The new `supervisor_window.py` has `_rpt_open_session()` and `_rpt_close_session()` stubs but they reference the sessions table (login sessions), not a separate cashing_sessions concept. Decide if you want to keep the distinction.
+
+---
+
+### 10. 🔁 Reprint Last Receipt (Cashier Dashboard)
+**Old:** `_reprint_last_receipt()` on the cashier dashboard
+**New:** `_reprint_last()` exists in `cashier_window.py` but calls `reprint_receipt()` which doesn't exist in `utils/print_manager.py` yet.
+
+**Action:** Implement `reprint_receipt(receipt_id)` in `utils/print_manager.py` (covered under item 4 above).
+
+---
+
+### 11. 💰 Selling Price Auto-Calculation (Cost + Group Profit %)
+**Old:** `recalculate_selling_prices()` in `models.py` — full cascade logic
+**New:** `_calc_selling_price()` and `_get_selling_price()` exist in `supervisor_window.py` as UI helpers only. There's no DB-level cascade function.
+
+Missing:
+- `recalculate_selling_prices(product_ids, group_id, all_products)` — DB function that recalculates and saves
+- `recalculate_all_cases(case_profit_pct)` — recalculates all case prices when case profit % changes
+- Cascade logic: when a single's cost changes → update its linked case's cost and selling_price
+
+**Action:** Port these functions from `db/models.py` → `core/db_products.py`
+
+---
+
+## 🆕 New Features in the New Project (Not in Old)
+
+| Feature | Where | Notes |
+|---|---|---|
+| **Card + Split payment** | `checkout_dialog.py` | Old only supported cash |
+| **Misc item** | `ui/cashier/misc_dialog.py` | Add an unlisted item with custom name/price |
+| **Price check** | `cashier_window.py` → `_price_check()` | Look up a product price without adding to cart |
+| **Email + Tax ID fields** | `business` table | Old only had name, address, phone |
+| **`receipt_number` sequential IDs** | `receipts` table | e.g. `#0041` — cleaner than raw integer IDs |
+| **`settings` key-value store** | `db_config.py` | More flexible than columns in `business_info` |
+| **Thread-safe DB connections** | All `core/` modules | `threading.local()` per connection |
+| **WAL journal mode** | All `core/` modules | Better concurrent access |
+| **Password salting** | `db_users.py` | `secrets.token_hex(16)` salt — more secure |
+| **Zoom buttons on login** | `login_window.py` | UI scale adjustment |
+| **Password show/hide toggle** | `login_window.py` | |
+| **`checkout_quick_amounts`** | `db_config.py` | Configurable quick-cash buttons ($2/$5/$10…) |
+| **`terminal_id`** | settings | For multi-terminal setups |
+| **`ProductSearchWidget`** | `manager_window.py` | Reusable autocomplete product picker |
+| **`ManagerWindow` inherits `SupervisorWindow`** | `manager_window.py` | Cleaner — avoids duplicating supervisor tabs |
+
+---
+
+## 📋 Recommended Migration Order
+
+Work through these in order — each one unblocks the next:
+
+1. **`core/db_products.py`** — Add `recalculate_selling_prices()` and `recalculate_all_cases()` (needed by supervisor save product)
+2. **`utils/thermal_printer.py`** — Port ESC/POS driver from old `printing/thermal_printer.py`
+3. **`utils/receipt_formatter.py`** — Port formatter (void, refund, session, GCT-column layouts)
+4. **`utils/receipt_builder.py`** — Port receipt/void/refund/session data builders
+5. **`utils/print_manager.py`** — Add `reprint_receipt`, `print_void`, `print_refund`, `print_session`, thermal dispatch
+6. **Printer settings UI** — Add thermal connection fields to manager Printers panel (already has normal printer fields)
+7. **Labels tab** — Port shelf label designer to `ui/supervisor/labels_tab.py`, add to both supervisor and manager
+8. **`core/db_sync.py`** — Port `SyncManager` from old `db/sync.py`
+9. **Sync UI tab** — Add to manager window (progress bar + push/pull/sync buttons)
+10. **DBF import** — Port `import_stock_dbf.py` and DBF tab to manager
+11. **Cashing sessions** — Decide if you want supervisor-managed periods; if yes, add `cashing_sessions` table and update Reports tab
+
+---
+
+## 🗄️ Database Schema Differences
+
+| Concept | Old column/table | New column/table | Action |
+|---|---|---|---|
+| Alias | `aliases` table (shared across products) | `product_alias` table (per product) | Different model — new is simpler |
+| Discount levels | `discount_levels` table (separate rows) | `discount_level1/2` INT columns on product | New is simpler but less flexible |
+| Case profit % | `business_info.case_profit_percent` | `settings` key `case_profit_pct` (add it) | Add to `_DEFAULTS` in `db_config.py` |
+| Thermal printer settings | columns in `business_info` | `settings` keys (partially there) | Add `thermal_connection`, `thermal_port`, `thermal_vendor_id`, `thermal_product_id` keys to `_DEFAULTS` |
+| Receipt layout | `business_info.receipt_layout` | Add `receipt_layout` to settings `_DEFAULTS` | |
+| Cashing sessions | `cashing_sessions` table | Not present | Add if needed |
+| Sync columns | `sync_id`, `synced_at` on each table | Not present | Add when implementing sync |
