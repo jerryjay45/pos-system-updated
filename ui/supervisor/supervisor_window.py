@@ -553,7 +553,10 @@ class SupervisorWindow(BaseWindow):
         reply = QMessageBox.question(self, "Close Session", "Close this cashier session?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
-            close_session(self._rpt_selected_session_id, 0); self._rpt_refresh()
+            # Pass real sales total from receipts
+            st = session_totals(self._rpt_selected_session_id)
+            close_session(self._rpt_selected_session_id, st.get("total_sales", 0))
+            self._rpt_refresh()
 
     def _rpt_open_session(self):
         if not self._rpt_selected_cashier_id: return

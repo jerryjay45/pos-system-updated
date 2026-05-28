@@ -24,7 +24,7 @@ from ui.shared.theme  import (
     WARM_WHITE, WHITE, BORDER, BORDER_LIGHT, MUTED, LABEL_TEXT,
     RED, RED_LIGHT, GREEN,
 )
-from core.db_users    import open_session, close_session, add_session_sales
+from core.db_users    import open_session, add_session_sales
 from core.db_config   import get_quick_keys, gct_rate, get_bool
 from core.db_products import get_product_by_barcode, get_products, get_product_by_id
 from core.db_config   import get_quick_keys, gct_rate, get_business
@@ -46,10 +46,8 @@ class CashierWindow(BaseWindow):
         self._disc_rules   = self._load_discount_rules()
         self._last_txn_id  = None
 
-        # Session — reuse existing open session or create new one
-        from core.db_users import get_open_session
-        existing = get_open_session(user["id"])
-        self._session_id = existing["id"] if existing else open_session(user["id"])
+        # Always open a fresh session on login
+        self._session_id = open_session(user["id"])
 
         # 3 independent carts
         self.carts       = [[] for _ in range(3)]
@@ -58,8 +56,8 @@ class CashierWindow(BaseWindow):
         self.setWindowTitle("POS System — Cashier")
         self.setMinimumSize(1280, 720)
         self._build_ui()
-        self._check_session_gate()
         self._start_clock()
+        self._show_session_started_popup()
 
     # ── Property: active cart list ────────────────────────────────────
     @property
@@ -401,108 +399,43 @@ class CashierWindow(BaseWindow):
     # CLOCK
     # ================================================================
 
-    def _check_session_gate(self):
-        """Show session gate overlay if no active session and gate is enabled."""
-        from core.db_users import get_open_session
-        gate_enabled = get_bool("session_gate_enabled", True)
-        session = get_open_session(self.user["id"])
-        if session:
-            self._session_id = session["id"]
-            self._hide_session_gate()
-        elif gate_enabled:
-            self._show_session_gate()
-        else:
-            # Gate disabled — auto-open session silently
-            self._session_id = open_session(self.user["id"])
+    def _show_session_started_popup(self):
+        """Brief non-blocking popup informing cashier a session has started."""
+        from PyQt6.QtWidgets import QFrame, QLabel, QHBoxLayout
+        from PyQt6.QtCore    import QTimer, QDateTime
 
-    def _show_session_gate(self):
-        """Block the UI with a session-required overlay."""
-        if hasattr(self, "_session_overlay") and self._session_overlay:
-            return
-        from PyQt6.QtWidgets import QFrame, QVBoxLayout, QLabel, QPushButton
-        overlay = QFrame(self.centralWidget())
-        overlay.setObjectName("sessionGate")
-        overlay.setStyleSheet(f"""
-            QFrame#sessionGate {{
-                background: rgba(17,17,17,0.82);
-                border-radius: 0px;
-            }}
-        """)
-        overlay.resize(self.centralWidget().size())
-        overlay.raise_()
-
-        inner = QFrame(overlay)
-        inner.setFixedSize(420, 220)
-        inner.setStyleSheet(f"""
-            QFrame {{
+        popup = QFrame(self)
+        popup.setObjectName("sessionPopup")
+        popup.setStyleSheet(f"""
+            QFrame#sessionPopup {{
                 background: {DARK_2};
-                border: 1px solid {DARK_4};
-                border-radius: 14px;
+                border: 1px solid {AMBER};
+                border-radius: 10px;
             }}
         """)
-        il = QVBoxLayout(inner)
-        il.setContentsMargins(30, 28, 30, 28)
-        il.setSpacing(14)
-        il.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        popup.setFixedSize(340, 64)
 
-        icon = QLabel("⏸")
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet("font-size:36px;background:transparent;")
+        pl = QHBoxLayout(popup)
+        pl.setContentsMargins(16, 0, 16, 0)
 
-        title = QLabel("No Active Session")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet(f"color:white;font-size:16px;font-weight:700;background:transparent;")
+        icon = QLabel("▶")
+        icon.setStyleSheet(f"color:{AMBER};font-size:18px;background:transparent;")
 
-        sub = QLabel("You need to open a session before you can ring sales.")
-        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub.setWordWrap(True)
-        sub.setStyleSheet(f"color:{MUTED};font-size:12px;background:transparent;")
+        now = QDateTime.currentDateTime().toString("dd MMM yyyy  hh:mm AP")
+        msg = QLabel(f"Session #{self._session_id:04d} started  ·  {now}")
+        msg.setStyleSheet(f"color:white;font-size:12px;font-weight:500;background:transparent;")
 
-        open_btn = QPushButton("▶  Open Session")
-        open_btn.setFixedHeight(42)
-        open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        open_btn.setStyleSheet(f"""
-            QPushButton{{background:{AMBER};color:white;border:none;
-            border-radius:21px;font-size:13px;font-weight:700;}}
-            QPushButton:hover{{background:{AMBER_DARK};}}
-        """)
-        open_btn.clicked.connect(self._open_session_from_gate)
+        pl.addWidget(icon); pl.addWidget(msg, stretch=1)
 
-        il.addWidget(icon)
-        il.addWidget(title)
-        il.addWidget(sub)
-        il.addWidget(open_btn)
+        # Position top-right of window
+        popup.move(self.width() - popup.width() - 20, 56)
+        popup.show(); popup.raise_()
 
-        # Centre inner frame
-        inner.move(
-            (overlay.width()  - inner.width())  // 2,
-            (overlay.height() - inner.height()) // 2,
-        )
-        overlay.show()
-        self._session_overlay = overlay
-        self._session_overlay_inner = inner
-
-    def _hide_session_gate(self):
-        if hasattr(self, "_session_overlay") and self._session_overlay:
-            self._session_overlay.hide()
-            self._session_overlay.deleteLater()
-            self._session_overlay = None
-
-    def _open_session_from_gate(self):
-        self._session_id = open_session(self.user["id"])
-        self._hide_session_gate()
-
-    def resizeEvent(self, event):
-        """Keep session gate overlay full-size when window resizes."""
-        super().resizeEvent(event)
-        if hasattr(self, "_session_overlay") and self._session_overlay:
-            self._session_overlay.resize(self.centralWidget().size())
-            if hasattr(self, "_session_overlay_inner"):
-                inner = self._session_overlay_inner
-                inner.move(
-                    (self._session_overlay.width()  - inner.width())  // 2,
-                    (self._session_overlay.height() - inner.height()) // 2,
-                )
+        # Auto-dismiss after 4 seconds with fade
+        def _dismiss():
+            try: popup.hide(); popup.deleteLater()
+            except: pass
+        QTimer.singleShot(4000, _dismiss)
 
     def _start_clock(self):
         t = QTimer(self); t.timeout.connect(self._tick); t.start(1000); self._tick()
@@ -892,8 +825,7 @@ class CashierWindow(BaseWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
-            subtotal = sum(item["price"] * item["qty"] for cart in self.carts for item in cart)
-            close_session(self._session_id, subtotal)
+            # Session stays open — only closed manually by supervisor
             self.logout_requested.emit()
             self.force_close()
 

@@ -484,14 +484,6 @@ class ManagerWindow(SupervisorWindow):
         )
 
         # Separator between toggles
-        sep2 = QFrame(); sep2.setFrameShape(QFrame.Shape.HLine)
-        sep2.setStyleSheet(f"background:{BORDER};max-height:1px;border:none;margin:4px 0;")
-
-        pb.addWidget(self.perm_require_remove_auth)
-        pb.addWidget(ra_hint)
-        pb.addWidget(sep2)
-        pb.addWidget(self.perm_session_gate)
-        pb.addWidget(sg_hint)
         lay.addWidget(perm_box)
 
         lay.addStretch()
@@ -736,7 +728,6 @@ class ManagerWindow(SupervisorWindow):
         from core.db_config import gct_rate as gr, get_bool
         self.biz_gct.setValue(gr() * 100)
         self.perm_require_remove_auth.setChecked(get_bool("require_remove_auth", False))
-        self.perm_session_gate.setChecked(get_bool("session_gate_enabled", True))
 
     def _biz_save(self):
         try:
@@ -748,7 +739,6 @@ class ManagerWindow(SupervisorWindow):
                             receipt_footer=self.biz_footer.text().strip())
             cfg_set("gct_rate", str(self.biz_gct.value() / 100))
             cfg_set("require_remove_auth", "1" if self.perm_require_remove_auth.isChecked() else "0")
-            cfg_set("session_gate_enabled", "1" if self.perm_session_gate.isChecked() else "0")
             self._save_discount_levels()
             self.biz_feedback.setStyleSheet(f"color:{GREEN};font-size:11px;font-weight:600;")
             self.biz_feedback.setText("✓  Business info saved.")
