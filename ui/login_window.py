@@ -23,8 +23,8 @@ from ui.shared.theme import (
     BORDER, MUTED, RED, RED_LIGHT, RED_BORDER, LABEL_TEXT,
     MAIN_FONT,
 )
-from core.db_users  import authenticate
-from core.db_config import get_business, get_int, set as cfg_set
+from core.db_users  import authenticate, get_open_session
+from core.db_config import get_business, get_int, set as cfg_set, get_bool
 
 
 # ── Hex logo widget ───────────────────────────────────────────────────────────
@@ -81,6 +81,9 @@ class PasswordField(QLineEdit):
         super().__init__(parent)
         self.setEchoMode(QLineEdit.EchoMode.Password)
         self.setPlaceholderText("Enter your password")
+        self.textChanged.connect(
+            lambda t: self.setText(t.upper()) if t != t.upper() else None
+        )
 
         self._btn = QPushButton("👁", self)
         self._btn.setFixedSize(28, 28)
@@ -169,6 +172,9 @@ class LoginCard(QFrame):
         self.username_input.setFixedHeight(40)
         self.username_input.setStyleSheet(self._input_style())
         self.username_input.returnPressed.connect(self._attempt_login)
+        self.username_input.textChanged.connect(
+            lambda t: self.username_input.setText(t.upper()) if t != t.upper() else None
+        )
         layout.addWidget(self.username_input)
         layout.addSpacing(12)
 
@@ -364,6 +370,12 @@ class LoginWindow(QMainWindow):
         role = user.get("role", "cashier")
 
         if role == "cashier":
+            # Check session gate
+            if get_bool("session_gate", False) and not get_open_session(user["id"]):
+                self.card._show_error(
+                    "No active session. Ask your supervisor to open one before you log in."
+                )
+                return
             from ui.cashier.cashier_window import CashierWindow
             self._next = CashierWindow(user)
         elif role == "supervisor":
@@ -376,7 +388,7 @@ class LoginWindow(QMainWindow):
             self.card._show_error(f"Unknown role: {role}")
             return
 
-        self._next.show()
+        self._next.showMaximized()
         self.hide()
 
         # Re-show login when the next window is closed

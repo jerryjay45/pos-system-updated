@@ -184,6 +184,24 @@ def get_receipt_by_number(receipt_number: str) -> dict | None:
         return get_receipt_by_id(row["id"])
 
 
+def count_receipts(
+    user_id: int = None, session_id: int = None,
+    status: str = None, search: str = "",
+    date_from: str = "", date_to: str = "",
+) -> int:
+    q = "SELECT COUNT(*) FROM receipts WHERE 1=1"
+    params: list = []
+    if user_id    is not None: q += " AND user_id = ?";       params.append(user_id)
+    if session_id is not None: q += " AND session_id = ?";    params.append(session_id)
+    if status:                 q += " AND status = ?";        params.append(status)
+    if search:
+        q += " AND receipt_number LIKE ?";                    params.append(f"%{search}%")
+    if date_from: q += " AND date(created_at) >= ?";         params.append(date_from)
+    if date_to:   q += " AND date(created_at) <= ?";         params.append(date_to)
+    with _conn() as con:
+        return con.execute(q, params).fetchone()[0]
+
+
 def get_receipts(
     user_id: int = None,
     session_id: int = None,

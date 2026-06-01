@@ -1,12 +1,12 @@
 """
 core/db_products.py
-Products database — handles products, aliases, groups.
+Products database.
 
 Tables
 ------
+price_groups  — named groups for price-linked products (alias or variant)
+groups        — product groups with profit margins
 products      — main product records
-product_alias — sibling aliases (many per product, sync on change)
-groups        — named product groups (Bulk, Canned, …)
 """
 
 import sqlite3
@@ -34,52 +34,190 @@ def _conn():
 # ── Schema ────────────────────────────────────────────────────────────────────
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS price_groups (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT    NOT NULL UNIQUE,
+    type          TEXT    NOT NULL DEFAULT 'alias'
+                          CHECK(type IN ('alias','variant')),
+    selling_price REAL    NOT NULL DEFAULT 0.0
+);
+
 CREATE TABLE IF NOT EXISTS groups (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    name        TEXT    NOT NULL UNIQUE
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    name          TEXT    NOT NULL UNIQUE,
+    profit_margin REAL    NOT NULL DEFAULT 0.0
 );
 
 CREATE TABLE IF NOT EXISTS products (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    barcode         TEXT    NOT NULL UNIQUE,
-    brand           TEXT    NOT NULL DEFAULT '',
-    name            TEXT    NOT NULL,
-    cost            REAL    NOT NULL DEFAULT 0.0,
-    selling_price   REAL    NOT NULL DEFAULT 0.0,
-    group_id        INTEGER REFERENCES groups(id) ON DELETE SET NULL,
-    discount_level1 INTEGER DEFAULT NULL,   -- qty threshold for level-1 price
-    discount_level2 INTEGER DEFAULT NULL,   -- qty threshold for level-2 price (higher qty)
-    gct_applicable  INTEGER NOT NULL DEFAULT 1,   -- 1 = yes, 0 = no
-    is_case         INTEGER NOT NULL DEFAULT 0,   -- 1 = case item
-    case_qty        INTEGER DEFAULT NULL,          -- units per case
-    case_product_id INTEGER REFERENCES products(id) ON DELETE SET NULL,
-    stock           INTEGER NOT NULL DEFAULT 0,
-    created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
-    updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    barcode          TEXT    NOT NULL UNIQUE,
+    name             TEXT    NOT NULL,
+    cost             REAL    NOT NULL DEFAULT 0.0,
+    selling_price    REAL    NOT NULL DEFAULT 0.0,
+    group_id         INTEGER REFERENCES groups(id)       ON DELETE SET NULL,
+    alias_group_id   INTEGER REFERENCES price_groups(id) ON DELETE SET NULL,
+    variant_group_id INTEGER REFERENCES price_groups(id) ON DELETE SET NULL,
+    discount_level1  INTEGER DEFAULT NULL,
+    discount_level2  INTEGER DEFAULT NULL,
+    gct_applicable   INTEGER NOT NULL DEFAULT 1,
+    is_case          INTEGER NOT NULL DEFAULT 0,
+    case_qty         INTEGER DEFAULT NULL,
+    case_product_id  INTEGER REFERENCES products(id)     ON DELETE SET NULL,
+    stock            INTEGER NOT NULL DEFAULT 0,
+    created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE IF NOT EXISTS product_alias (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
-    alias       TEXT    NOT NULL,
-    UNIQUE (product_id, alias)
-);
-
--- Indexes for fast barcode / name lookups
-CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);
-CREATE INDEX IF NOT EXISTS idx_products_name    ON products(name COLLATE NOCASE);
-CREATE INDEX IF NOT EXISTS idx_alias_alias      ON product_alias(alias COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_products_barcode  ON products(barcode);
+CREATE INDEX IF NOT EXISTS idx_products_name     ON products(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_products_alias_pg ON products(alias_group_id);
+CREATE INDEX IF NOT EXISTS idx_products_var_pg   ON products(variant_group_id);
 """
 
 
 def init_db():
-    """Create tables if they don't exist."""
+    """Create tables and migrate existing schema."""
     with _conn() as con:
+        # ── Step 1: migrate products table BEFORE running full SCHEMA ──
+        # Check if products table exists at all
+        has_products = con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='products'"
+        ).fetchone()
+
+        if has_products:
+            cols = {r[1] for r in con.execute("PRAGMA table_info(products)")}
+            if "brand" in cols:
+                # Recreate without brand, with new columns
+                con.executescript("""
+                    PRAGMA foreign_keys=OFF;
+                    CREATE TABLE IF NOT EXISTS price_groups (
+                        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name          TEXT    NOT NULL UNIQUE,
+                        type          TEXT    NOT NULL DEFAULT 'alias'
+                                              CHECK(type IN ('alias','variant')),
+                        selling_price REAL    NOT NULL DEFAULT 0.0
+                    );
+                    CREATE TABLE IF NOT EXISTS groups (
+                        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                        name          TEXT    NOT NULL UNIQUE,
+                        profit_margin REAL    NOT NULL DEFAULT 0.0
+                    );
+                    CREATE TABLE products_new (
+                        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                        barcode          TEXT    NOT NULL UNIQUE,
+                        name             TEXT    NOT NULL,
+                        cost             REAL    NOT NULL DEFAULT 0.0,
+                        selling_price    REAL    NOT NULL DEFAULT 0.0,
+                        group_id         INTEGER REFERENCES groups(id)       ON DELETE SET NULL,
+                        alias_group_id   INTEGER REFERENCES price_groups(id) ON DELETE SET NULL,
+                        variant_group_id INTEGER REFERENCES price_groups(id) ON DELETE SET NULL,
+                        discount_level1  INTEGER DEFAULT NULL,
+                        discount_level2  INTEGER DEFAULT NULL,
+                        gct_applicable   INTEGER NOT NULL DEFAULT 1,
+                        is_case          INTEGER NOT NULL DEFAULT 0,
+                        case_qty         INTEGER DEFAULT NULL,
+                        case_product_id  INTEGER REFERENCES products(id)     ON DELETE SET NULL,
+                        stock            INTEGER NOT NULL DEFAULT 0,
+                        created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+                        updated_at       TEXT    NOT NULL DEFAULT (datetime('now'))
+                    );
+                    INSERT INTO products_new
+                        (id, barcode, name, cost, selling_price, group_id,
+                         discount_level1, discount_level2, gct_applicable,
+                         is_case, case_qty, case_product_id, stock,
+                         created_at, updated_at)
+                    SELECT id, barcode, name, cost, selling_price, group_id,
+                           discount_level1, discount_level2, gct_applicable,
+                           is_case, case_qty, case_product_id, stock,
+                           created_at, updated_at
+                    FROM products;
+                    DROP TABLE products;
+                    ALTER TABLE products_new RENAME TO products;
+                    DROP TABLE IF EXISTS product_alias;
+                    PRAGMA foreign_keys=ON;
+                """)
+                con.commit()
+            else:
+                # Add new columns if missing
+                for col, defn in [
+                    ("alias_group_id",   "INTEGER REFERENCES price_groups(id) ON DELETE SET NULL"),
+                    ("variant_group_id", "INTEGER REFERENCES price_groups(id) ON DELETE SET NULL"),
+                ]:
+                    if col not in cols:
+                        con.execute(f"ALTER TABLE products ADD COLUMN {col} {defn}")
+                con.execute("DROP TABLE IF EXISTS product_alias")
+                con.commit()
+
+        # ── Step 2: create any still-missing tables ────────────────────
         con.executescript(SCHEMA)
+
+        # ── Step 3: migrate groups table ──────────────────────────────
+        gcols = {r[1] for r in con.execute("PRAGMA table_info(groups)")}
+        if "profit_margin" not in gcols:
+            con.execute("ALTER TABLE groups ADD COLUMN profit_margin REAL NOT NULL DEFAULT 0.0")
         con.commit()
 
 
-# ── Groups ────────────────────────────────────────────────────────────────────
+# ── Price Groups ──────────────────────────────────────────────────────────────
+
+def get_price_groups(type_: str = None) -> list[dict]:
+    q = "SELECT * FROM price_groups"
+    params = []
+    if type_:
+        q += " WHERE type = ?"
+        params.append(type_)
+    q += " ORDER BY name"
+    with _conn() as con:
+        return [dict(r) for r in con.execute(q, params)]
+
+
+def add_price_group(name: str, type_: str, selling_price: float = 0.0) -> int:
+    with _conn() as con:
+        cur = con.execute(
+            "INSERT INTO price_groups (name, type, selling_price) VALUES (?, ?, ?)",
+            (name.strip().upper(), type_, selling_price)
+        )
+        con.commit()
+        return cur.lastrowid
+
+
+def update_price_group(group_id: int, name: str = None,
+                       selling_price: float = None) -> list[dict]:
+    """Update a price group and cascade selling price to all member products.
+    Returns list of affected products for confirmation dialog.
+    """
+    with _conn() as con:
+        if name:
+            con.execute("UPDATE price_groups SET name = ? WHERE id = ?",
+                        (name.strip().upper(), group_id))
+        if selling_price is not None:
+            con.execute("UPDATE price_groups SET selling_price = ? WHERE id = ?",
+                        (selling_price, group_id))
+            # Collect affected products
+            affected = [dict(r) for r in con.execute(
+                """SELECT id, name FROM products
+                   WHERE alias_group_id = ? OR variant_group_id = ?""",
+                (group_id, group_id)
+            )]
+            # Cascade price
+            con.execute(
+                """UPDATE products SET selling_price = ?, updated_at = datetime('now')
+                   WHERE alias_group_id = ? OR variant_group_id = ?""",
+                (selling_price, group_id, group_id)
+            )
+            con.commit()
+            return affected
+        con.commit()
+        return []
+
+
+def delete_price_group(group_id: int):
+    with _conn() as con:
+        con.execute("DELETE FROM price_groups WHERE id = ?", (group_id,))
+        con.commit()
+
+
+# ── Product Groups ────────────────────────────────────────────────────────────
 
 def get_groups() -> list[dict]:
     with _conn() as con:
@@ -88,9 +226,141 @@ def get_groups() -> list[dict]:
 
 def add_group(name: str) -> int:
     with _conn() as con:
-        cur = con.execute("INSERT OR IGNORE INTO groups (name) VALUES (?)", (name,))
+        cur = con.execute("INSERT OR IGNORE INTO groups (name) VALUES (?)",
+                          (name.strip().upper(),))
         con.commit()
         return cur.lastrowid
+
+
+def update_group_margin(group_id: int, profit_margin: float):
+    with _conn() as con:
+        con.execute("UPDATE groups SET profit_margin = ? WHERE id = ?",
+                    (profit_margin, group_id))
+        con.commit()
+    recalculate_selling_prices(group_id=group_id)
+
+
+def recalculate_selling_prices(group_id: int = None):
+    """Recalculate selling_price = cost × (1 + profit_margin) for group products."""
+    with _conn() as con:
+        if group_id is not None:
+            rows = con.execute(
+                "SELECT p.id, p.cost, g.profit_margin "
+                "FROM products p JOIN groups g ON g.id = p.group_id "
+                "WHERE p.group_id = ? AND p.cost > 0",
+                (group_id,)
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT p.id, p.cost, g.profit_margin "
+                "FROM products p JOIN groups g ON g.id = p.group_id "
+                "WHERE p.cost > 0"
+            ).fetchall()
+        for row in rows:
+            new_price = round(row["cost"] * (1 + row["profit_margin"]), 2)
+            con.execute("UPDATE products SET selling_price = ? WHERE id = ?",
+                        (new_price, row["id"]))
+        con.commit()
+
+
+def recalculate_all_cases(case_profit_pct: float = None) -> int:
+    """Recalculate selling_price for every case product.
+
+    A case product's selling price = its own cost × (1 + case_profit_pct).
+    If *case_profit_pct* is not supplied it is read from the settings DB.
+
+    Also ensures each case product's cost is in sync with its parent single:
+        case.cost = single.cost × case.case_qty
+
+    Returns the number of case products updated.
+    """
+    if case_profit_pct is None:
+        from core.db_config import get as cfg_get
+        try:
+            case_profit_pct = float(cfg_get("case_profit_pct", "0.10"))
+        except (ValueError, TypeError):
+            case_profit_pct = 0.10
+
+    with _conn() as con:
+        cases = con.execute(
+            """SELECT p.id, p.cost, p.case_qty, p.case_product_id
+               FROM products p
+               WHERE p.is_case = 1"""
+        ).fetchall()
+
+        updated = 0
+        for c in cases:
+            cost = c["cost"]
+
+            # Sync cost from parent single if linked
+            if c["case_product_id"] and c["case_qty"]:
+                parent = con.execute(
+                    "SELECT cost FROM products WHERE id = ?",
+                    (c["case_product_id"],)
+                ).fetchone()
+                if parent and parent["cost"] > 0:
+                    cost = round(parent["cost"] * c["case_qty"], 4)
+                    con.execute(
+                        "UPDATE products SET cost = ?, updated_at = datetime('now') WHERE id = ?",
+                        (cost, c["id"])
+                    )
+
+            if cost > 0:
+                new_price = round(cost * (1 + case_profit_pct), 2)
+                con.execute(
+                    "UPDATE products SET selling_price = ?, updated_at = datetime('now') WHERE id = ?",
+                    (new_price, c["id"])
+                )
+                updated += 1
+
+        con.commit()
+    return updated
+
+
+def cascade_single_cost_to_cases(single_product_id: int) -> int:
+    """When a single product's cost changes, update linked case products.
+
+    Updates each case product that references *single_product_id*:
+      - case.cost = single.cost × case.case_qty
+      - case.selling_price = case.cost × (1 + case_profit_pct)
+
+    Returns the number of case products updated.
+    """
+    from core.db_config import get as cfg_get
+    try:
+        case_profit_pct = float(cfg_get("case_profit_pct", "0.10"))
+    except (ValueError, TypeError):
+        case_profit_pct = 0.10
+
+    with _conn() as con:
+        single = con.execute(
+            "SELECT cost FROM products WHERE id = ?",
+            (single_product_id,)
+        ).fetchone()
+        if not single or single["cost"] <= 0:
+            return 0
+
+        single_cost = single["cost"]
+        cases = con.execute(
+            "SELECT id, case_qty FROM products WHERE is_case = 1 AND case_product_id = ?",
+            (single_product_id,)
+        ).fetchall()
+
+        updated = 0
+        for c in cases:
+            qty = c["case_qty"] or 1
+            case_cost  = round(single_cost * qty, 4)
+            case_price = round(case_cost * (1 + case_profit_pct), 2)
+            con.execute(
+                """UPDATE products
+                   SET cost = ?, selling_price = ?, updated_at = datetime('now')
+                   WHERE id = ?""",
+                (case_cost, case_price, c["id"])
+            )
+            updated += 1
+
+        con.commit()
+    return updated
 
 
 def delete_group(group_id: int):
@@ -103,26 +373,26 @@ def delete_group(group_id: int):
 
 def get_products(search: str = "", group_id: int = None,
                  limit: int = 100, offset: int = 0) -> list[dict]:
-    """Return products with optional full-text search and group filter."""
     q = """
-        SELECT p.*, g.name AS group_name
+        SELECT p.*,
+               g.name  AS group_name,
+               ag.name AS alias_group_name,
+               vg.name AS variant_group_name
         FROM   products p
-        LEFT   JOIN groups g ON g.id = p.group_id
+        LEFT   JOIN groups       g  ON g.id  = p.group_id
+        LEFT   JOIN price_groups ag ON ag.id = p.alias_group_id
+        LEFT   JOIN price_groups vg ON vg.id = p.variant_group_id
         WHERE  1=1
     """
     params: list = []
     if search:
         q += """
-          AND (p.barcode LIKE ?
-            OR p.name    LIKE ?
-            OR p.brand   LIKE ?
-            OR EXISTS (
-                SELECT 1 FROM product_alias a
-                WHERE  a.product_id = p.id
-                AND    a.alias LIKE ?
-            ))
+          AND (LOWER(p.barcode) LIKE ?
+            OR LOWER(p.name)    LIKE ?
+            OR LOWER(ag.name)   LIKE ?
+            OR LOWER(vg.name)   LIKE ?)
         """
-        s = f"%{search}%"
+        s = f"%{search.lower()}%"
         params += [s, s, s, s]
     if group_id is not None:
         q += " AND p.group_id = ?"
@@ -136,8 +406,14 @@ def get_products(search: str = "", group_id: int = None,
 def get_product_by_id(product_id: int) -> dict | None:
     with _conn() as con:
         row = con.execute(
-            "SELECT p.*, g.name AS group_name FROM products p "
-            "LEFT JOIN groups g ON g.id = p.group_id WHERE p.id = ?",
+            """SELECT p.*, g.name AS group_name,
+                      ag.name AS alias_group_name,
+                      vg.name AS variant_group_name
+               FROM products p
+               LEFT JOIN groups       g  ON g.id  = p.group_id
+               LEFT JOIN price_groups ag ON ag.id = p.alias_group_id
+               LEFT JOIN price_groups vg ON vg.id = p.variant_group_id
+               WHERE p.id = ?""",
             (product_id,)
         ).fetchone()
         return dict(row) if row else None
@@ -146,15 +422,22 @@ def get_product_by_id(product_id: int) -> dict | None:
 def get_product_by_barcode(barcode: str) -> dict | None:
     with _conn() as con:
         row = con.execute(
-            "SELECT p.*, g.name AS group_name FROM products p "
-            "LEFT JOIN groups g ON g.id = p.group_id WHERE p.barcode = ?",
-            (barcode,)
+            """SELECT p.*, g.name AS group_name,
+                      ag.name AS alias_group_name,
+                      vg.name AS variant_group_name
+               FROM products p
+               LEFT JOIN groups       g  ON g.id  = p.group_id
+               LEFT JOIN price_groups ag ON ag.id = p.alias_group_id
+               LEFT JOIN price_groups vg ON vg.id = p.variant_group_id
+               WHERE p.barcode = ?""",
+            (barcode.strip().upper(),)
         ).fetchone()
         return dict(row) if row else None
 
 
-def add_product(barcode: str, brand: str, name: str, cost: float,
+def add_product(barcode: str, name: str, cost: float,
                 selling_price: float, group_id: int = None,
+                alias_group_id: int = None, variant_group_id: int = None,
                 gct_applicable: bool = True, is_case: bool = False,
                 case_qty: int = None, case_product_id: int = None,
                 discount_level1: int = None, discount_level2: int = None,
@@ -162,11 +445,14 @@ def add_product(barcode: str, brand: str, name: str, cost: float,
     with _conn() as con:
         cur = con.execute(
             """INSERT INTO products
-               (barcode, brand, name, cost, selling_price, group_id,
+               (barcode, name, cost, selling_price, group_id,
+                alias_group_id, variant_group_id,
                 gct_applicable, is_case, case_qty, case_product_id,
                 discount_level1, discount_level2, stock)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (barcode, brand, name, cost, selling_price, group_id,
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (barcode.strip().upper(), name.strip().upper(),
+             cost, selling_price, group_id,
+             alias_group_id, variant_group_id,
              int(gct_applicable), int(is_case), case_qty, case_product_id,
              discount_level1, discount_level2, stock)
         )
@@ -175,11 +461,11 @@ def add_product(barcode: str, brand: str, name: str, cost: float,
 
 
 def update_product(product_id: int, **fields) -> bool:
-    """Update arbitrary product fields. Returns True if a row was changed."""
     if not fields:
         return False
-    fields["updated_at"] = "datetime('now')"
-    # Build SET clause — datetime gets special treatment (no quoting)
+    for key in ("name", "barcode"):
+        if key in fields and isinstance(fields[key], str):
+            fields[key] = fields[key].strip().upper()
     set_parts = []
     params = []
     for k, v in fields.items():
@@ -188,6 +474,7 @@ def update_product(product_id: int, **fields) -> bool:
         else:
             set_parts.append(f"{k} = ?")
             params.append(v)
+    set_parts.append("updated_at = datetime('now')")
     params.append(product_id)
     sql = f"UPDATE products SET {', '.join(set_parts)} WHERE id = ?"
     with _conn() as con:
@@ -203,62 +490,70 @@ def delete_product(product_id: int) -> bool:
         return cur.rowcount > 0
 
 
-def update_stock(product_id: int, delta: int):
-    """Add delta (positive or negative) to stock atomically."""
+# ── Stock ─────────────────────────────────────────────────────────────────────
+
+def decrement_stock(product_id: int, qty: int):
+    """Decrement stock for a sale. Handles case products automatically.
+    For case products, decrements the master single product's stock by case_qty × qty.
+    Clamps at 0.
+    """
     with _conn() as con:
-        con.execute(
-            "UPDATE products SET stock = MAX(0, stock + ?) WHERE id = ?",
-            (delta, product_id)
-        )
-        con.commit()
-
-
-# ── Aliases ───────────────────────────────────────────────────────────────────
-
-def get_aliases(product_id: int) -> list[str]:
-    with _conn() as con:
-        rows = con.execute(
-            "SELECT alias FROM product_alias WHERE product_id = ? ORDER BY alias",
+        p = con.execute(
+            "SELECT is_case, case_qty, case_product_id FROM products WHERE id = ?",
             (product_id,)
-        ).fetchall()
-        return [r["alias"] for r in rows]
-
-
-def set_aliases(product_id: int, aliases: list[str]):
-    """
-    Replace all aliases for a product.
-    Because aliases are siblings, changing one updates all — just pass the
-    full new list every time.
-    """
-    with _conn() as con:
-        con.execute("DELETE FROM product_alias WHERE product_id = ?", (product_id,))
-        con.executemany(
-            "INSERT OR IGNORE INTO product_alias (product_id, alias) VALUES (?, ?)",
-            [(product_id, a.strip()) for a in aliases if a.strip()]
-        )
+        ).fetchone()
+        if not p:
+            return
+        if p["is_case"] and p["case_product_id"]:
+            # Decrement master single product
+            units = (p["case_qty"] or 1) * qty
+            con.execute(
+                "UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?",
+                (units, p["case_product_id"])
+            )
+        else:
+            con.execute(
+                "UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?",
+                (qty, product_id)
+            )
         con.commit()
 
 
-def search_by_alias(alias: str) -> list[dict]:
+def increment_stock(product_id: int, qty: int):
+    """Increment stock for a void/refund. Handles case products automatically."""
     with _conn() as con:
-        return [dict(r) for r in con.execute(
-            """SELECT p.*, g.name AS group_name
-               FROM   product_alias a
-               JOIN   products p ON p.id = a.product_id
-               LEFT   JOIN groups g ON g.id = p.group_id
-               WHERE  a.alias LIKE ?""",
-            (f"%{alias}%",)
-        )]
+        p = con.execute(
+            "SELECT is_case, case_qty, case_product_id FROM products WHERE id = ?",
+            (product_id,)
+        ).fetchone()
+        if not p:
+            return
+        if p["is_case"] and p["case_product_id"]:
+            units = (p["case_qty"] or 1) * qty
+            con.execute(
+                "UPDATE products SET stock = stock + ? WHERE id = ?",
+                (units, p["case_product_id"])
+            )
+        else:
+            con.execute(
+                "UPDATE products SET stock = stock + ? WHERE id = ?",
+                (qty, product_id)
+            )
+        con.commit()
 
 
 def count_products(search: str = "", group_id: int = None) -> int:
-    q = "SELECT COUNT(*) FROM products p WHERE 1=1"
+    q = """
+        SELECT COUNT(*) FROM products p
+        LEFT JOIN price_groups ag ON ag.id = p.alias_group_id
+        LEFT JOIN price_groups vg ON vg.id = p.variant_group_id
+        WHERE 1=1
+    """
     params: list = []
     if search:
-        q += """ AND (p.barcode LIKE ? OR p.name LIKE ? OR p.brand LIKE ?
-                  OR EXISTS (SELECT 1 FROM product_alias a
-                             WHERE a.product_id=p.id AND a.alias LIKE ?))"""
-        s = f"%{search}%"
+        q += """ AND (LOWER(p.barcode) LIKE ? OR LOWER(p.name) LIKE ?
+                   OR LOWER(ag.name)   LIKE ? OR LOWER(vg.name) LIKE ?)"""
+        s = f"%{search.lower()}%"
         params += [s, s, s, s]
     if group_id is not None:
         q += " AND p.group_id = ?"

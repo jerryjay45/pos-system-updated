@@ -50,6 +50,8 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS sessions (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    opened_by   INTEGER DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
+    closed_by   INTEGER DEFAULT NULL REFERENCES users(id) ON DELETE SET NULL,
     opened_at   TEXT    NOT NULL DEFAULT (datetime('now')),
     closed_at   TEXT    DEFAULT NULL,
     total_sales REAL    NOT NULL DEFAULT 0.0,
@@ -87,13 +89,19 @@ def init_db():
     """Create tables and seed a default manager account if none exists."""
     with _conn() as con:
         con.executescript(SCHEMA)
+        # Migrate existing sessions table — add columns if missing
+        cols = {r[1] for r in con.execute("PRAGMA table_info(sessions)")}
+        if "opened_by" not in cols:
+            con.execute("ALTER TABLE sessions ADD COLUMN opened_by INTEGER DEFAULT NULL")
+        if "closed_by" not in cols:
+            con.execute("ALTER TABLE sessions ADD COLUMN closed_by INTEGER DEFAULT NULL")
         # Seed default manager only on first run
         if con.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
             con.execute(
                 "INSERT INTO users (full_name, username, password_hash, role) "
                 "VALUES (?, ?, ?, ?)",
-                ("Admin Manager", "manager",
-                 _hash_password("admin"), "manager")
+                ("ADMIN MANAGER", "MANAGER",
+                 _hash_password("ADMIN"), "manager")
             )
         con.commit()
 
@@ -108,9 +116,9 @@ def authenticate(username: str, password: str) -> dict | None:
     with _conn() as con:
         row = con.execute(
             "SELECT * FROM users WHERE username = ? AND is_active = 1",
-            (username,)
+            (username.strip().upper(),)
         ).fetchone()
-        if row and _verify_password(password, row["password_hash"]):
+        if row and _verify_password(password.strip().upper(), row["password_hash"]):
             user = dict(row)
             del user["password_hash"]
             return user
@@ -149,7 +157,8 @@ def add_user(full_name: str, username: str, password: str,
         cur = con.execute(
             "INSERT INTO users (full_name, username, password_hash, role, is_active) "
             "VALUES (?, ?, ?, ?, ?)",
-            (full_name, username, _hash_password(password), role, int(is_active))
+            (full_name.strip().upper(), username.strip().upper(),
+             _hash_password(password.strip().upper()), role, int(is_active))
         )
         con.commit()
         return cur.lastrowid
@@ -159,9 +168,9 @@ def update_user(user_id: int, full_name: str = None, username: str = None,
                 password: str = None, role: str = None,
                 is_active: bool = None) -> bool:
     parts, params = [], []
-    if full_name  is not None: parts.append("full_name = ?");      params.append(full_name)
-    if username   is not None: parts.append("username = ?");       params.append(username)
-    if password   is not None: parts.append("password_hash = ?");  params.append(_hash_password(password))
+    if full_name  is not None: parts.append("full_name = ?");      params.append(full_name.strip().upper())
+    if username   is not None: parts.append("username = ?");       params.append(username.strip().upper())
+    if password   is not None: parts.append("password_hash = ?");  params.append(_hash_password(password.strip().upper()))
     if role       is not None: parts.append("role = ?");           params.append(role)
     if is_active  is not None: parts.append("is_active = ?");      params.append(int(is_active))
     if not parts:
@@ -185,22 +194,27 @@ def delete_user(user_id: int) -> bool:
 
 # ── Sessions ──────────────────────────────────────────────────────────────────
 
-def open_session(user_id: int) -> int:
-    """Open a new cashier session. Returns session id."""
+def open_session(user_id: int, opened_by: int = None) -> int:
+    """Open a new cashier session. Returns session id.
+    opened_by is the supervisor/manager who opened it (None = self-opened).
+    """
     with _conn() as con:
         cur = con.execute(
-            "INSERT INTO sessions (user_id) VALUES (?)", (user_id,)
+            "INSERT INTO sessions (user_id, opened_by) VALUES (?, ?)",
+            (user_id, opened_by)
         )
         con.commit()
         return cur.lastrowid
 
 
-def close_session(session_id: int, total_sales: float) -> bool:
+def close_session(session_id: int, total_sales: float,
+                  closed_by: int = None) -> bool:
+    """Close an open session. closed_by is the supervisor/manager who closed it."""
     with _conn() as con:
         cur = con.execute(
             "UPDATE sessions SET status='closed', closed_at=datetime('now'), "
-            "total_sales=? WHERE id=? AND status='open'",
-            (total_sales, session_id)
+            "total_sales=?, closed_by=? WHERE id=? AND status='open'",
+            (total_sales, closed_by, session_id)
         )
         con.commit()
         return cur.rowcount > 0
@@ -208,9 +222,14 @@ def close_session(session_id: int, total_sales: float) -> bool:
 
 def get_sessions(user_id: int = None, status: str = None) -> list[dict]:
     q = """
-        SELECT s.*, u.full_name, u.username
+        SELECT s.*,
+               u.full_name, u.username,
+               ob.full_name AS opened_by_name,
+               cb.full_name AS closed_by_name
         FROM   sessions s
-        JOIN   users u ON u.id = s.user_id
+        JOIN   users u  ON u.id  = s.user_id
+        LEFT JOIN users ob ON ob.id = s.opened_by
+        LEFT JOIN users cb ON cb.id = s.closed_by
         WHERE  1=1
     """
     params: list = []
@@ -226,6 +245,7 @@ def get_sessions(user_id: int = None, status: str = None) -> list[dict]:
 
 
 def get_open_session(user_id: int) -> dict | None:
+    """Return the currently open session for a cashier, or None."""
     with _conn() as con:
         row = con.execute(
             "SELECT * FROM sessions WHERE user_id=? AND status='open' "
@@ -233,6 +253,11 @@ def get_open_session(user_id: int) -> dict | None:
             (user_id,)
         ).fetchone()
         return dict(row) if row else None
+
+
+def has_open_session(user_id: int) -> bool:
+    """Return True if the cashier has an open session."""
+    return get_open_session(user_id) is not None
 
 
 def add_session_sales(session_id: int, amount: float):

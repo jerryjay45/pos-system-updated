@@ -5,7 +5,7 @@ Blocks accidental closing via the X button.
 All dashboards inherit from this.
 """
 
-from PyQt6.QtWidgets import QMainWindow, QMessageBox
+from PyQt6.QtWidgets import QMainWindow, QMessageBox, QLineEdit
 
 
 class BaseWindow(QMainWindow):
@@ -16,6 +16,17 @@ class BaseWindow(QMainWindow):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+
+    @staticmethod
+    def make_upper_input(placeholder: str = "", height: int = 34) -> QLineEdit:
+        """Return a QLineEdit that forces all text to uppercase as the user types."""
+        inp = QLineEdit()
+        inp.setPlaceholderText(placeholder)
+        inp.setFixedHeight(height)
+        inp.textChanged.connect(
+            lambda t, w=inp: w.setText(t.upper()) if t != t.upper() else None
+        )
+        return inp
 
     def closeEvent(self, event):
         msg = QMessageBox(self)

@@ -443,6 +443,14 @@ class CheckoutDialog(QDialog):
             self.last_txn_id = receipt["receipt_number"]
             add_session_sales(self.session_id, self.total)
 
+            # Decrement stock if tracking is enabled
+            from core.db_config import get_bool
+            if get_bool("stock_tracking", False):
+                from core.db_products import decrement_stock
+                for ci in self.cart:
+                    if ci.get("id"):
+                        decrement_stock(ci["id"], ci["qty"])
+
             # Auto-print receipt (non-blocking)
             try:
                 from utils.print_manager import print_receipt

@@ -29,7 +29,7 @@ from core.db_config   import (
     get_business, update_business, get, set as cfg_set, set_many,
     gct_rate, get_pg_config, save_pg_config, get_quick_keys, save_quick_keys,
 )
-from core.db_products import get_products, get_product_by_id, get_groups, add_group, delete_group
+from core.db_products import get_products, get_product_by_id, get_groups, add_group, delete_group, update_group_margin, recalculate_all_cases
 
 
 # ================================================================
@@ -254,14 +254,16 @@ class ManagerWindow(SupervisorWindow):
         form = QFormLayout(); form.setSpacing(10)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
 
-        self.usr_f_fullname = QLineEdit(); self.usr_f_fullname.setFixedHeight(34)
-        self.usr_f_fullname.setPlaceholderText("Full name"); self.usr_f_fullname.setStyleSheet(self._input_style())
-        self.usr_f_username = QLineEdit(); self.usr_f_username.setFixedHeight(34)
-        self.usr_f_username.setPlaceholderText("Login username"); self.usr_f_username.setStyleSheet(self._input_style())
+        self.usr_f_fullname = self.make_upper_input("Full name"); self.usr_f_fullname.setStyleSheet(self._input_style())
+        self.usr_f_username = self.make_upper_input("Login username"); self.usr_f_username.setStyleSheet(self._input_style())
         self.usr_f_password = QLineEdit(); self.usr_f_password.setFixedHeight(34)
         self.usr_f_password.setEchoMode(QLineEdit.EchoMode.Password)
         self.usr_f_password.setPlaceholderText("Password (leave blank to keep)")
         self.usr_f_password.setStyleSheet(self._input_style())
+        # Force password to uppercase as typed
+        self.usr_f_password.textChanged.connect(
+            lambda t: self.usr_f_password.setText(t.upper()) if t != t.upper() else None
+        )
         self.usr_f_role = QComboBox(); self.usr_f_role.setFixedHeight(34)
         self.usr_f_role.addItems(["cashier","supervisor","manager"])
         self.usr_f_role.setStyleSheet(self._combo_style())
@@ -482,8 +484,51 @@ class ManagerWindow(SupervisorWindow):
             "Require cashiers to open a session before selling",
             "When enabled, cashiers see a session gate on login and cannot ring sales until a session is opened."
         )
+        self.perm_cart_qty_edit, cq_hint = _perm_toggle(
+            "Allow cashiers to edit item quantity directly in the cart",
+            "When enabled, cashiers can double-click the Qty cell in the cart to change the quantity."
+        )
 
-        # Separator between toggles
+        # Low stock warning toggle + threshold spinbox
+        self.perm_low_stock, ls_hint = _perm_toggle(
+            "Show low stock warning when adding items to cart",
+            "When enabled, cashiers see a warning if a product's stock is at or below the threshold."
+        )
+        self.perm_stock_tracking, st_hint = _perm_toggle(
+            "Enable stock tracking",
+            "When enabled, stock is decremented on every sale and incremented on voids/refunds."
+        )
+        ls_row = QHBoxLayout()
+        ls_row.setContentsMargins(22, 0, 0, 0)
+        ls_row.setSpacing(8)
+        ls_threshold_lbl = QLabel("Threshold:")
+        ls_threshold_lbl.setStyleSheet(f"color:{LABEL_TEXT};font-size:12px;")
+        self.perm_low_stock_threshold = QSpinBox()
+        self.perm_low_stock_threshold.setMinimum(1)
+        self.perm_low_stock_threshold.setMaximum(999)
+        self.perm_low_stock_threshold.setValue(5)
+        self.perm_low_stock_threshold.setFixedWidth(70)
+        self.perm_low_stock_threshold.setFixedHeight(28)
+        self.perm_low_stock_threshold.setStyleSheet(self._input_style())
+        self.perm_low_stock_threshold.setEnabled(False)
+        ls_units_lbl = QLabel("units or fewer")
+        ls_units_lbl.setStyleSheet(f"color:{MUTED};font-size:11px;")
+        ls_row.addWidget(ls_threshold_lbl)
+        ls_row.addWidget(self.perm_low_stock_threshold)
+        ls_row.addWidget(ls_units_lbl)
+        ls_row.addStretch()
+        # Enable/disable threshold spinbox with the checkbox
+        self.perm_low_stock.toggled.connect(self.perm_low_stock_threshold.setEnabled)
+
+        for widget in [
+            self.perm_require_remove_auth, ra_hint,
+            self.perm_session_gate,        sg_hint,
+            self.perm_cart_qty_edit,       cq_hint,
+            self.perm_low_stock,           ls_hint,
+            self.perm_stock_tracking,      st_hint,
+        ]:
+            pb.addWidget(widget)
+        pb.addLayout(ls_row)
         lay.addWidget(perm_box)
 
         lay.addStretch()
@@ -513,6 +558,8 @@ class ManagerWindow(SupervisorWindow):
         self.groups_table.setFixedHeight(180)
         self.groups_table.verticalHeader().setVisible(False); self.groups_table.setShowGrid(False)
         self.groups_table.setStyleSheet(self._table_style())
+        # Only margin column (col 1) is editable
+        self.groups_table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked)
         lay.addWidget(self.groups_table)
         grp_row = QHBoxLayout(); grp_row.setSpacing(8)
         self.new_group_inp = QLineEdit(); self.new_group_inp.setFixedHeight(32)
@@ -527,6 +574,43 @@ class ManagerWindow(SupervisorWindow):
         grp_row.addWidget(self.new_group_inp, stretch=1); grp_row.addWidget(add_grp); grp_row.addWidget(del_grp)
         lay.addLayout(grp_row)
         self._load_groups()
+
+        lay.addWidget(self._hdiv())
+
+        # Case product profit margin
+        lay.addWidget(self._section_lbl("Case Product Pricing"))
+        case_hint = QLabel(
+            "Markup applied to all case products when recalculating prices. "
+            "Case cost is derived from the linked single product cost \u00d7 units per case."
+        )
+        case_hint.setStyleSheet(f"color:{MUTED};font-size:11px;"); case_hint.setWordWrap(True)
+        lay.addWidget(case_hint)
+        case_row = QHBoxLayout(); case_row.setSpacing(10)
+        self.case_profit_spin = QDoubleSpinBox()
+        self.case_profit_spin.setRange(0, 200); self.case_profit_spin.setDecimals(2)
+        self.case_profit_spin.setSuffix("  %"); self.case_profit_spin.setFixedHeight(36)
+        self.case_profit_spin.setFixedWidth(140)
+        self.case_profit_spin.setStyleSheet(
+            f"QDoubleSpinBox{{background:{WHITE};color:{DARK_CARD};border:1px solid {BORDER};"
+            f"border-radius:7px;padding:0 10px;font-size:13px;font-weight:600;}}"
+            f"QDoubleSpinBox:focus{{border-color:{AMBER};}}"
+        )
+        try:
+            from core.db_config import get as cfg_get
+            self.case_profit_spin.setValue(float(cfg_get("case_profit_pct", "0.10")) * 100)
+        except Exception:
+            self.case_profit_spin.setValue(10.0)
+        recalc_btn = QPushButton("\u21bb  Recalculate All Cases Now")
+        recalc_btn.setFixedHeight(34)
+        recalc_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{AMBER_DARK};border:1px solid {AMBER};"
+            f"border-radius:17px;font-size:11px;padding:0 14px;}}"
+            f"QPushButton:hover{{background:{AMBER_LIGHTEST};}}"
+        )
+        recalc_btn.clicked.connect(self._recalculate_cases_now)
+        case_row.addWidget(self._flabel("Case Markup:")); case_row.addWidget(self.case_profit_spin)
+        case_row.addWidget(recalc_btn); case_row.addStretch()
+        lay.addLayout(case_row)
 
         lay.addWidget(self._hdiv())
         lay.addWidget(self._section_lbl("Discount Levels"))
@@ -556,8 +640,52 @@ class ManagerWindow(SupervisorWindow):
         scroll.setWidget(fw); return scroll
 
     def _groups_disc_save(self):
+        # Save profit margins for each group row
+        for row in range(self.groups_table.rowCount()):
+            name_item   = self.groups_table.item(row, 0)
+            margin_item = self.groups_table.item(row, 1)
+            if not name_item or not margin_item: continue
+            group_id = name_item.data(Qt.ItemDataRole.UserRole)
+            if not group_id: continue
+            # Parse margin — accept "30", "30%", "0.30"
+            raw = margin_item.text().strip().rstrip("%")
+            try:
+                val = float(raw)
+                # If entered as percentage (e.g. 30) convert to decimal (0.30)
+                margin = val / 100 if val > 1 else val
+            except ValueError:
+                continue
+            update_group_margin(group_id, margin)
+
+        # Save case profit % and recalculate all cases
+        case_pct = self.case_profit_spin.value() / 100
+        from core.db_config import set as cfg_set
+        cfg_set("case_profit_pct", str(case_pct))
+        n_cases = recalculate_all_cases(case_pct)
+
         self._save_discount_levels()
-        QMessageBox.information(self, "Saved", "Groups and discount levels saved.")
+        self._load_groups()   # refresh display with updated margins
+
+        msg = "Groups, margins, and discount levels saved.\nSelling prices have been recalculated."
+        if n_cases:
+            msg += f"\n{n_cases} case product{'s' if n_cases != 1 else ''} repriced at {self.case_profit_spin.value():.2f}% markup."
+        QMessageBox.information(self, "Saved", msg)
+
+    def _recalculate_cases_now(self):
+        """Immediately recalculate all case products using the current spinbox value."""
+        case_pct = self.case_profit_spin.value() / 100
+        from core.db_config import set as cfg_set
+        cfg_set("case_profit_pct", str(case_pct))
+        n = recalculate_all_cases(case_pct)
+        if n:
+            QMessageBox.information(
+                self, "Cases Recalculated",
+                f"{n} case product{'s' if n != 1 else ''} repriced.\n"
+                f"Markup: {self.case_profit_spin.value():.2f}%"
+            )
+        else:
+            QMessageBox.information(self, "Cases Recalculated",
+                "No case products found with a linked single product and cost > 0.")
 
     def _build_printers_panel(self):
         """Printer settings sub-tab."""
@@ -652,7 +780,7 @@ class ManagerWindow(SupervisorWindow):
         self.pg_port.setStyleSheet(f"QSpinBox{{background:{WHITE};color:{DARK_CARD};border:1px solid {BORDER};border-radius:7px;padding:0 10px;font-size:12px;}}QSpinBox:focus{{border-color:{AMBER};}}")
         self.pg_db   = self._finp("Database name")
         self.pg_user = self._finp("Username")
-        self.pg_pass = self._finp("Password")
+        self.pg_pass = self._finp("Password", uppercase=False)
         self.pg_pass.setEchoMode(QLineEdit.EchoMode.Password)
 
         for lbl_txt, widget in [("Host", self.pg_host),("Port", self.pg_port),
@@ -725,9 +853,16 @@ class ManagerWindow(SupervisorWindow):
         self.biz_email.setText(b.get("email",""))
         self.biz_tax_id.setText(b.get("tax_id",""))
         self.biz_footer.setText(b.get("receipt_footer",""))
-        from core.db_config import gct_rate as gr, get_bool
+        from core.db_config import gct_rate as gr, get_bool, get_int
         self.biz_gct.setValue(gr() * 100)
         self.perm_require_remove_auth.setChecked(get_bool("require_remove_auth", False))
+        self.perm_session_gate.setChecked(get_bool("session_gate", False))
+        self.perm_cart_qty_edit.setChecked(get_bool("allow_cart_qty_edit", False))
+        low_stock = get_bool("low_stock_warning", False)
+        self.perm_low_stock.setChecked(low_stock)
+        self.perm_low_stock_threshold.setValue(get_int("low_stock_threshold", 5))
+        self.perm_low_stock_threshold.setEnabled(low_stock)
+        self.perm_stock_tracking.setChecked(get_bool("stock_tracking", False))
 
     def _biz_save(self):
         try:
@@ -739,6 +874,11 @@ class ManagerWindow(SupervisorWindow):
                             receipt_footer=self.biz_footer.text().strip())
             cfg_set("gct_rate", str(self.biz_gct.value() / 100))
             cfg_set("require_remove_auth", "1" if self.perm_require_remove_auth.isChecked() else "0")
+            cfg_set("session_gate",        "1" if self.perm_session_gate.isChecked()         else "0")
+            cfg_set("allow_cart_qty_edit",  "1" if self.perm_cart_qty_edit.isChecked()       else "0")
+            cfg_set("low_stock_warning",    "1" if self.perm_low_stock.isChecked()            else "0")
+            cfg_set("low_stock_threshold",  str(self.perm_low_stock_threshold.value()))
+            cfg_set("stock_tracking",       "1" if self.perm_stock_tracking.isChecked()       else "0")
             self._save_discount_levels()
             self.biz_feedback.setStyleSheet(f"color:{GREEN};font-size:11px;font-weight:600;")
             self.biz_feedback.setText("✓  Business info saved.")
@@ -776,10 +916,13 @@ class ManagerWindow(SupervisorWindow):
         for g in get_groups():
             row = self.groups_table.rowCount(); self.groups_table.insertRow(row)
             self.groups_table.setRowHeight(row, 34)
-            name_item = QTableWidgetItem(g["name"]); name_item.setData(Qt.ItemDataRole.UserRole, g["id"])
+            name_item = QTableWidgetItem(g["name"])
+            name_item.setData(Qt.ItemDataRole.UserRole, g["id"])
+            name_item.setFlags(name_item.flags() & ~Qt.ItemFlag.ItemIsEditable)  # lock name
             self.groups_table.setItem(row, 0, name_item)
             margin = g.get("profit_margin", 0) or 0
-            self.groups_table.setItem(row, 1, QTableWidgetItem(f"{float(margin)*100:.1f}%"))
+            margin_item = QTableWidgetItem(f"{float(margin)*100:.1f}")
+            self.groups_table.setItem(row, 1, margin_item)
 
     def _add_group(self):
         name = self.new_group_inp.text().strip()
@@ -876,8 +1019,11 @@ class ManagerWindow(SupervisorWindow):
     def _accent_btn(self):
         return f"QPushButton{{background:{AMBER};color:white;border:none;border-radius:17px;font-size:12px;font-weight:600;padding:0 16px;}}QPushButton:hover{{background:{AMBER_DARK};}}"
 
-    def _finp(self, placeholder):
-        inp = QLineEdit(); inp.setPlaceholderText(placeholder); inp.setFixedHeight(34)
+    def _finp(self, placeholder, uppercase=True):
+        if uppercase:
+            inp = self.make_upper_input(placeholder)
+        else:
+            inp = QLineEdit(); inp.setPlaceholderText(placeholder); inp.setFixedHeight(34)
         inp.setStyleSheet(self._input_style()); return inp
 
     def _flabel(self, text):

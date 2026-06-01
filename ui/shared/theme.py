@@ -204,7 +204,7 @@ def get_stylesheet() -> str:
     return f"""
 QWidget {{
     font-family: "{F}", "Segoe UI", sans-serif;
-    font-size: 13px;
+    font-size: 14px;
     color: {DC};
     background-color: {WW};
 }}
@@ -212,7 +212,7 @@ QMainWindow, QDialog {{ background-color: {WW}; }}
 
 QPushButton {{
     background-color: {A}; color: white; border: none;
-    border-radius: 8px; padding: 6px 16px; font-weight: 600;
+    border-radius: 8px; padding: 7px 18px; font-size: 13px; font-weight: 600;
 }}
 QPushButton:hover   {{ background-color: {AD}; }}
 QPushButton:pressed {{ background-color: {_active.get("ACCENT_DARKER","#633806")}; }}
@@ -231,34 +231,38 @@ QPushButton[dark="true"] {{ background-color: {DC}; }}
 QPushButton[dark="true"]:hover {{ background-color: #444441; }}
 
 QLineEdit {{
-    background-color: {W}; border: 1px solid {B};
-    border-radius: 7px; padding: 4px 10px;
+    background-color: {W}; border: 1.5px solid {B};
+    border-radius: 7px; padding: 5px 12px;
     font-size: 13px; color: {DC};
+    min-height: 20px;
 }}
 QLineEdit:focus {{ border-color: {A}; }}
 
 QComboBox {{
-    background-color: {W}; border: 1px solid {B};
-    border-radius: 7px; padding: 4px 10px;
-    font-size: 12px; color: {DC};
+    background-color: {W}; border: 1.5px solid {B};
+    border-radius: 7px; padding: 5px 12px;
+    font-size: 13px; color: {DC};
+    min-height: 20px;
 }}
 QComboBox:focus {{ border-color: {A}; }}
-QComboBox::drop-down {{ border: none; width: 20px; }}
+QComboBox::drop-down {{ border: none; width: 22px; }}
 QComboBox QAbstractItemView {{
     background-color: {W}; border: 1px solid {B};
     selection-background-color: {AL}; selection-color: {DC};
+    font-size: 13px;
+    padding: 2px;
 }}
 
 QTableWidget {{
     background-color: {W}; gridline-color: {BL};
-    border: none; font-size: 12px;
+    border: none; font-size: 13px;
 }}
-QTableWidget::item {{ padding: 6px 10px; border-bottom: 1px solid {BL}; }}
+QTableWidget::item {{ padding: 8px 12px; border-bottom: 1px solid {BL}; }}
 QTableWidget::item:selected {{ background-color: {AB}; color: {DC}; }}
 QHeaderView::section {{
     background-color: {D}; color: {A};
-    font-size: 11px; font-weight: 600;
-    padding: 6px 10px; border: none;
+    font-size: 12px; font-weight: 600;
+    padding: 8px 12px; border: none;
     border-right: 1px solid {D4};
 }}
 
@@ -266,25 +270,26 @@ QScrollBar:vertical {{
     background: {WW}; width: 8px; border-radius: 4px;
 }}
 QScrollBar::handle:vertical {{
-    background: {B}; border-radius: 4px; min-height: 20px;
+    background: {B}; border-radius: 4px; min-height: 24px;
 }}
 QScrollBar::handle:vertical:hover {{ background: {M}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 
-QLabel {{ background: transparent; }}
+QLabel {{ background: transparent; font-size: 13px; }}
 
 QTabBar::tab {{
     background: {W}; color: {LT};
     border: none; border-bottom: 2px solid transparent;
-    padding: 10px 16px; font-size: 12px; font-weight: 500;
+    padding: 11px 18px; font-size: 13px; font-weight: 500;
 }}
 QTabBar::tab:selected {{ color: {DC}; border-bottom: 2px solid {A}; }}
 QTabBar::tab:hover {{ color: {DC}; }}
 QTabWidget::pane {{ border: none; border-top: 1px solid {B}; }}
 
+QCheckBox {{ font-size: 13px; spacing: 8px; }}
 QCheckBox::indicator, QRadioButton::indicator {{
-    width: 15px; height: 15px;
-    border: 1px solid {B}; border-radius: 3px; background: {W};
+    width: 16px; height: 16px;
+    border: 1.5px solid {B}; border-radius: 4px; background: {W};
 }}
 QCheckBox::indicator:checked {{
     background-color: {A}; border-color: {A};
@@ -294,7 +299,7 @@ QFrame#topbar {{ background-color: {D}; border-bottom: 1px solid {D4}; }}
 QFrame#sidebar {{ background-color: {D2}; border-right: 1px solid {D4}; }}
 QFrame#totalsPanel {{ background-color: {D2}; border-left: 1px solid {D4}; }}
 QFrame#bottombar {{ background-color: {D2}; border-top: 1px solid {D4}; }}
-QStatusBar {{ background-color: {D}; color: {M}; font-size: 11px; }}
+QStatusBar {{ background-color: {D}; color: {M}; font-size: 12px; }}
 """
 
 

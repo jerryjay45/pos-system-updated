@@ -86,10 +86,19 @@ _DEFAULTS = {
     "pg_user":               "",
     "pg_password":           "",
 
+    # Case pricing
+    "case_profit_pct":       "0.10",       # 10 % markup over cost for case products
+
     # UI
-    "ui_scale":              "1.0",        # zoom factor
     "currency_symbol":       "$",
     "terminal_id":           "01",
+
+    # Cashier behaviour
+    "allow_cart_qty_edit":   "0",          # allow double-click qty edit in cart
+    "low_stock_warning":     "0",          # warn cashier when stock is low
+    "low_stock_threshold":   "5",          # qty at or below which warning shows
+    "session_gate":          "0",          # require supervisor to open session manually
+    "stock_tracking":        "0",          # track and decrement stock on sales
 }
 
 
@@ -129,6 +138,12 @@ def get_business() -> dict:
 def update_business(**fields) -> bool:
     if not fields:
         return False
+    # Uppercase all text fields except email, website, and numeric fields
+    _skip_upper = {"email", "website", "gct_rate"}
+    fields = {
+        k: v.strip().upper() if isinstance(v, str) and k not in _skip_upper else v
+        for k, v in fields.items()
+    }
     parts = [f"{k} = ?" for k in fields]
     params = list(fields.values())
     with _conn() as con:

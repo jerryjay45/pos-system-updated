@@ -24,7 +24,7 @@ from ui.shared.theme  import (
     WARM_WHITE, WHITE, BORDER, BORDER_LIGHT, MUTED, LABEL_TEXT,
     RED, RED_LIGHT, GREEN,
 )
-from core.db_users    import open_session, add_session_sales
+from core.db_users    import open_session, add_session_sales, get_open_session
 from core.db_config   import get_quick_keys, gct_rate, get_bool
 from core.db_products import get_product_by_barcode, get_products, get_product_by_id
 from core.db_config   import get_quick_keys, gct_rate, get_business
@@ -46,8 +46,24 @@ class CashierWindow(BaseWindow):
         self._disc_rules   = self._load_discount_rules()
         self._last_txn_id  = None
 
-        # Always open a fresh session on login
-        self._session_id = open_session(user["id"])
+        # Manager-controlled feature flags (read once at login)
+        from core.db_config import get_bool, get_int
+        self._allow_qty_edit      = get_bool("allow_cart_qty_edit", False)
+        self._low_stock_warning   = get_bool("low_stock_warning",   False)
+        self._low_stock_threshold = get_int("low_stock_threshold",  5)
+        self._session_gate        = get_bool("session_gate",        False)
+
+        # Resume existing open session or create a new one
+        # (if session_gate is on, login_window already blocked cashiers without a session)
+        existing = get_open_session(user["id"])
+        if existing:
+            self._session_id  = existing["id"]
+            self._resuming    = True
+        else:
+            self._session_id  = open_session(user["id"])
+            self._resuming    = False
+
+        self._session_closing = False   # set True when supervisor closes session
 
         # 3 independent carts
         self.carts       = [[] for _ in range(3)]
@@ -58,6 +74,14 @@ class CashierWindow(BaseWindow):
         self._build_ui()
         self._start_clock()
         self._show_session_started_popup()
+
+        # Listen for supervisor session broadcasts
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if hasattr(app, "session_closed"):
+            app.session_closed.connect(self._on_session_closed_by_supervisor)
+        if hasattr(app, "session_opened"):
+            app.session_opened.connect(self._on_session_opened_by_supervisor)
 
     # ── Property: active cart list ────────────────────────────────────
     @property
@@ -247,6 +271,7 @@ class CashierWindow(BaseWindow):
         self.cart_table.verticalHeader().setVisible(False)
         self.cart_table.setShowGrid(False)
         self.cart_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.cart_table.cellDoubleClicked.connect(self._on_cart_double_click)
         self.cart_table.setStyleSheet(f"""
             QTableWidget{{background:{WHITE};border:none;font-size:12px;}}
             QTableWidget::item{{padding:6px 8px;border-bottom:1px solid {BORDER_LIGHT};color:{DARK_CARD};}}
@@ -322,6 +347,10 @@ class CashierWindow(BaseWindow):
         self._cart_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._cart_lbl.setStyleSheet("color:white;font-size:16px;font-weight:700;background:transparent;")
 
+        self._cart_items_lbl = QLabel("")
+        self._cart_items_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._cart_items_lbl.setStyleSheet("color:rgba(255,255,255,0.75);font-size:11px;font-weight:400;background:transparent;")
+
         nav_row = QHBoxLayout()
         prev_btn = QPushButton("←"); prev_btn.setFixedSize(34,34)
         prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -334,6 +363,7 @@ class CashierWindow(BaseWindow):
         nav_row.addWidget(prev_btn); nav_row.addStretch(); nav_row.addWidget(next_btn)
 
         cs_lay.addWidget(self._cart_lbl)
+        cs_lay.addWidget(self._cart_items_lbl)
         cs_lay.addLayout(nav_row)
         lay.addWidget(self._cart_section)
 
@@ -421,8 +451,9 @@ class CashierWindow(BaseWindow):
         icon = QLabel("▶")
         icon.setStyleSheet(f"color:{AMBER};font-size:18px;background:transparent;")
 
-        now = QDateTime.currentDateTime().toString("dd MMM yyyy  hh:mm AP")
-        msg = QLabel(f"Session #{self._session_id:04d} started  ·  {now}")
+        now    = QDateTime.currentDateTime().toString("dd MMM yyyy  hh:mm AP")
+        action = "resumed" if self._resuming else "started"
+        msg = QLabel(f"Session #{self._session_id:04d} {action}  ·  {now}")
         msg.setStyleSheet(f"color:white;font-size:12px;font-weight:500;background:transparent;")
 
         pl.addWidget(icon); pl.addWidget(msg, stretch=1)
@@ -488,9 +519,18 @@ class CashierWindow(BaseWindow):
         else:
             QListWidget.keyPressEvent(self.results_list, event)
 
+    def _clean_barcode(self, text: str) -> str:
+        """Strip common scanner prefix/suffix chars and whitespace."""
+        # Strip whitespace and common scanner garbage
+        text = text.strip().strip('\r\n\x00\x02\x03')
+        # Some scanners add a leading/trailing * or $ or Fn
+        for ch in ('*', '$', '%', '+', '/', '.'):
+            text = text.strip(ch)
+        return text.strip()
+
     def _handle_search_enter(self):
         qty  = self.qty_spinbox.value()
-        text = self.search_input.text().strip()
+        text = self._clean_barcode(self.search_input.text())
         if not text:
             self._handle_checkout(); return
 
@@ -505,12 +545,31 @@ class CashierWindow(BaseWindow):
         if len(results) == 1:
             self._add_to_cart(results[0], qty)
             self._clear_search()
+        elif len(results) == 0:
+            self._flash_not_found()
+            self.search_input.clear()
         else:
             self._show_results(results)
+
+    def _flash_not_found(self):
+        """Flash the search bar red briefly when product not found."""
+        original = self.search_input.styleSheet()
+        self.search_input.setStyleSheet(f"""
+            QLineEdit{{background:#FCEBEB;color:{RED};
+            border:2px solid {RED};border-radius:17px;
+            font-size:12px;padding:0 12px;}}
+        """)
+        self.search_input.setPlaceholderText("Product not found — try again")
+        from PyQt6.QtCore import QTimer
+        def _restore():
+            self.search_input.setStyleSheet(original)
+            self.search_input.setPlaceholderText("↵  Barcode  |  Search  ↵  Checkout")
+        QTimer.singleShot(1200, _restore)
 
     def _show_results(self, results):
         self.results_list.clear()
         if not results:
+            self._flash_not_found()
             item = QListWidgetItem("  No products found")
             item.setForeground(QColor(MUTED))
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
@@ -579,6 +638,72 @@ class CashierWindow(BaseWindow):
         self.cart.append(item)
         self._refresh_table()
         self._update_totals()
+
+        # Low stock warning
+        if self._low_stock_warning:
+            stock = product.get("stock", 0)
+            if stock <= self._low_stock_threshold:
+                self._show_low_stock_banner(product["name"], stock)
+
+    def _show_low_stock_banner(self, name: str, stock: int):
+        """Brief warning banner when a product is low on stock."""
+        from PyQt6.QtWidgets import QFrame, QLabel, QHBoxLayout
+        from PyQt6.QtCore import QTimer
+        banner = QFrame(self)
+        banner.setObjectName("lowStockBanner")
+        banner.setStyleSheet("""
+            QFrame#lowStockBanner {
+                background: #b45309;
+                border-radius: 8px;
+            }
+        """)
+        banner.setFixedSize(320, 48)
+        bl = QHBoxLayout(banner)
+        bl.setContentsMargins(14, 0, 14, 0)
+        lbl = QLabel(f"⚠  Low stock: {name}  ({stock} remaining)")
+        lbl.setStyleSheet("color:white;font-size:11px;font-weight:600;background:transparent;")
+        bl.addWidget(lbl)
+        banner.move(self.width() - banner.width() - 20, 56)
+        banner.show(); banner.raise_()
+        QTimer.singleShot(3500, banner.deleteLater)
+
+    def _on_cart_double_click(self, row: int, col: int):
+        """Allow qty editing on double-click if the feature is enabled."""
+        if not self._allow_qty_edit:
+            return
+        if col != 1:   # column 1 is Qty
+            return
+        if row >= len(self.cart):
+            return
+        item = self.cart[row]
+        from PyQt6.QtWidgets import QSpinBox
+        editor = QSpinBox(self.cart_table)
+        editor.setMinimum(1)
+        editor.setMaximum(9999)
+        editor.setValue(item["qty"])
+        editor.setStyleSheet(f"""
+            QSpinBox {{
+                background: {AMBER_BG};
+                border: 2px solid {AMBER};
+                border-radius: 4px;
+                color: {DARK_CARD};
+                font-weight: 600;
+                padding: 2px 4px;
+            }}
+        """)
+        self.cart_table.setCellWidget(row, col, editor)
+        editor.setFocus()
+        editor.selectAll()
+
+        def _commit():
+            new_qty = editor.value()
+            item["qty"] = new_qty
+            self._apply_discount(item)
+            self.cart_table.removeCellWidget(row, col)
+            self._refresh_table()
+            self._update_totals()
+
+        editor.editingFinished.connect(_commit)
 
     def _apply_discount(self, item):
         """Apply level-1 / level-2 discount based on qty thresholds."""
@@ -663,9 +788,23 @@ class CashierWindow(BaseWindow):
     def _next_cart(self):
         self.active_cart = (self.active_cart + 1) % 3; self._switch_cart()
 
+    def _update_cart_label(self):
+        """Update cart label with item count on a second line."""
+        idx         = self.active_cart + 1
+        total_items = len(self.cart)
+        self._cart_lbl.setText(f"Cart {idx}")
+        self._cart_lbl.setStyleSheet(
+            "color:white;font-size:16px;font-weight:700;background:transparent;"
+        )
+        if total_items:
+            self._cart_items_lbl.setText(f"({total_items} item{'s' if total_items != 1 else ''})")
+            self._cart_items_lbl.setVisible(True)
+        else:
+            self._cart_items_lbl.setVisible(False)
+
     def _switch_cart(self):
         color = CART_COLORS[self.active_cart]
-        self._cart_lbl.setText(f"Cart {self.active_cart + 1}")
+        self._update_cart_label()
         for attr in ["_cart_section", "subtotal_label_frame",
                      "gct_label_frame", "discount_label_frame", "total_label_frame"]:
             w = getattr(self, attr, None)
@@ -677,6 +816,7 @@ class CashierWindow(BaseWindow):
     # ── Table refresh ─────────────────────────────────────────────────
 
     def _refresh_table(self):
+        if hasattr(self, '_update_cart_label'): self._update_cart_label()
         self.cart_table.setRowCount(len(self.cart))
         C = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter
         L = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
@@ -729,6 +869,8 @@ class CashierWindow(BaseWindow):
             self.cart_table.setRowHeight(row, 38)
 
     def _update_totals(self):
+        # Update cart label (name + item count)
+        self._update_cart_label()
         subtotal = sum(item["price"] * item["qty"] for item in self.cart)
         gct      = sum(item["gct"]   * item["qty"] for item in self.cart)
         discount = sum(item.get("discount_applied", 0.0) * item["qty"] for item in self.cart)
@@ -779,6 +921,12 @@ class CashierWindow(BaseWindow):
 
     def _handle_checkout(self):
         if not self.cart: return
+        # Block if no active session
+        if not self._session_id:
+            QMessageBox.warning(self, "No Active Session",
+                "You don't have an active session.\n"
+                "Please ask your supervisor to open one.")
+            return
         from ui.cashier.checkout_dialog import CheckoutDialog
         dlg = CheckoutDialog(self.cart, self.user, self._session_id, self)
         if dlg.exec():
@@ -788,6 +936,78 @@ class CashierWindow(BaseWindow):
                 self._reprint_btn.setVisible(True)
             self._clear_cart()
             self.search_input.setFocus()
+            # Auto-logout if supervisor closed the session during this sale
+            if self._session_closing:
+                self.logout_requested.emit()
+                self.force_close()
+
+    def _on_session_closed_by_supervisor(self, session_id: int):
+        """Called when the supervisor closes this cashier's session."""
+        if session_id != self._session_id:
+            return
+        self._session_closing = True
+        self._session_id      = None
+        self._show_supervisor_closed_banner()
+
+    def _on_session_opened_by_supervisor(self, user_id: int):
+        """Called when the supervisor opens a session for this cashier."""
+        if user_id != self.user["id"]:
+            return
+        # Only activate if we were waiting (session gate was blocking)
+        if self._session_id is not None:
+            return
+        session = get_open_session(self.user["id"])
+        if not session:
+            return
+        self._session_id      = session["id"]
+        self._session_closing = False
+        self._show_session_activated_banner()
+
+    def _show_session_activated_banner(self):
+        """Brief green banner shown when supervisor opens a session for this cashier."""
+        from PyQt6.QtWidgets import QFrame, QLabel, QHBoxLayout
+        from PyQt6.QtCore import QTimer
+        banner = QFrame(self)
+        banner.setObjectName("activatedBanner")
+        banner.setStyleSheet(f"""
+            QFrame#activatedBanner {{
+                background: {GREEN};
+                border-radius: 8px;
+            }}
+        """)
+        banner.setFixedSize(340, 48)
+        bl = QHBoxLayout(banner)
+        bl.setContentsMargins(14, 0, 14, 0)
+        lbl = QLabel(f"✓  Session #{self._session_id:04d} opened — you can now process sales")
+        lbl.setStyleSheet("color:white;font-size:11px;font-weight:600;background:transparent;")
+        bl.addWidget(lbl)
+        banner.move(self.width() - banner.width() - 20, 56)
+        banner.show(); banner.raise_()
+        QTimer.singleShot(4000, banner.deleteLater)
+
+    def _show_supervisor_closed_banner(self):
+        """Persistent banner shown when supervisor closes the session."""
+        from PyQt6.QtWidgets import QFrame, QLabel, QHBoxLayout
+        banner = QFrame(self)
+        banner.setObjectName("closedBanner")
+        banner.setStyleSheet(f"""
+            QFrame#closedBanner {{
+                background: {RED};
+                border: none;
+                border-radius: 0px;
+            }}
+        """)
+        banner.setFixedHeight(40)
+        banner.setFixedWidth(self.width())
+        bl = QHBoxLayout(banner)
+        bl.setContentsMargins(16, 0, 16, 0)
+        lbl = QLabel("⚠  Your session has been closed by your supervisor. "
+                     "Complete your current sale to be logged out.")
+        lbl.setStyleSheet("color:white;font-size:12px;font-weight:600;background:transparent;")
+        bl.addWidget(lbl)
+        banner.move(0, 48)   # just below topbar
+        banner.show()
+        banner.raise_()
 
     def _show_change(self, change: float):
         self._change_display.setText(f"${change:.2f}")

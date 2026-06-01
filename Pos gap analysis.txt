@@ -57,7 +57,7 @@
 These features exist in the old project but have **not yet been ported** to the new one.
 
 ### 1. 🖨️ Thermal Printer Driver
-**Old:** `printing/thermal_printer.py` — full ESC/POS driver
+**Old:** `printing/thermal_printer.py` — full
 **New:** `utils/print_manager.py` only handles standard system printers (QPrinter)
 
 Missing:

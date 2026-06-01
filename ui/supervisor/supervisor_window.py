@@ -22,11 +22,14 @@ from ui.shared.theme import (
 )
 from core.db_products import (
     get_products, get_product_by_id, add_product, update_product,
-    delete_product, get_groups, add_group, get_aliases, set_aliases,
+    delete_product, get_groups, add_group,
+    get_price_groups, add_price_group, update_price_group,
+    count_products, cascade_single_cost_to_cases, recalculate_all_cases,
 )
-from core.db_users    import get_users, get_sessions, open_session, close_session, get_user_by_id
+from core.db_users    import get_users, get_sessions, open_session, close_session, get_user_by_id, has_open_session
 from core.db_checkout import (
-    get_receipts, get_receipt_by_id, void_receipt, refund_receipt, session_totals,
+    get_receipts, get_receipt_by_id, void_receipt, refund_receipt,
+    session_totals, count_receipts,
 )
 from core.db_config   import get_quick_keys, save_quick_keys, gct_rate
 
@@ -115,13 +118,25 @@ class SupervisorWindow(BaseWindow):
 
         tb = QHBoxLayout(); tb.setSpacing(8)
         self.product_search = QLineEdit()
-        self.product_search.setPlaceholderText("🔍  Search by name, barcode, brand, alias or group…")
+        self.product_search.setPlaceholderText("🔍  Search by name, barcode, alias or group…")
         self.product_search.setFixedHeight(34)
         self.product_search.setStyleSheet(self._input_style())
         self.product_search.returnPressed.connect(self._search_products)
 
         refresh_btn = self._icon_btn("↻", "Refresh")
-        refresh_btn.clicked.connect(lambda: self._load_products(self.product_search.text()))
+        refresh_btn.clicked.connect(lambda: (setattr(self, '_pg_page', 0), self._load_products(self.product_search.text())))
+
+        recalc_btn = QPushButton("⟳ Cases")
+        recalc_btn.setFixedHeight(34)
+        recalc_btn.setFixedWidth(74)
+        recalc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        recalc_btn.setToolTip("Recalculate all case product prices from their linked single products")
+        recalc_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{AMBER_DARK};border:1px solid {AMBER};"
+            f"border-radius:7px;font-size:11px;font-weight:600;}}"
+            f"QPushButton:hover{{background:{AMBER_LIGHTEST};}}"
+        )
+        recalc_btn.clicked.connect(self._recalculate_cases)
 
         add_btn = QPushButton("+ Add Product"); add_btn.setFixedHeight(34)
         add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -129,16 +144,16 @@ class SupervisorWindow(BaseWindow):
         add_btn.clicked.connect(self._new_product_form)
 
         tb.addWidget(self.product_search, stretch=1)
-        tb.addWidget(refresh_btn); tb.addWidget(add_btn)
+        tb.addWidget(refresh_btn); tb.addWidget(recalc_btn); tb.addWidget(add_btn)
         lay.addLayout(tb)
 
         self.product_table = QTableWidget()
-        self.product_table.setColumnCount(8)
+        self.product_table.setColumnCount(7)
         self.product_table.setHorizontalHeaderLabels(
-            ["Name","Barcode","Brand","Price","Group","GCT","Type","Actions"])
+            ["Name","Barcode","Cost","Group","GCT","Type","Actions"])
         hh = self.product_table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for col, w_ in enumerate([120,100,80,90,60,60,80], start=1):
+        for col, w_ in enumerate([120,80,90,60,60,80], start=1):
             hh.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
             self.product_table.setColumnWidth(col, w_)
         self.product_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -149,6 +164,29 @@ class SupervisorWindow(BaseWindow):
         self.product_table.setStyleSheet(self._table_style())
         self.product_table.doubleClicked.connect(self._on_product_dbl_click)
         lay.addWidget(self.product_table, stretch=1)
+
+        # Pagination controls
+        pg_row = QHBoxLayout(); pg_row.setSpacing(8)
+        self._pg_prev_btn = self._outline_btn("← Prev")
+        self._pg_prev_btn.setFixedWidth(80)
+        self._pg_prev_btn.clicked.connect(self._prev_page)
+        self._pg_label = QLabel("Page 1 of 1")
+        self._pg_label.setStyleSheet(f"color:{MUTED};font-size:11px;")
+        self._pg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._pg_next_btn = self._outline_btn("Next →")
+        self._pg_next_btn.setFixedWidth(80)
+        self._pg_next_btn.clicked.connect(self._next_page)
+        pg_row.addStretch()
+        pg_row.addWidget(self._pg_prev_btn)
+        pg_row.addWidget(self._pg_label)
+        pg_row.addWidget(self._pg_next_btn)
+        pg_row.addStretch()
+        lay.addLayout(pg_row)
+
+        # Pagination state
+        self._pg_page     = 0
+        self._pg_per_page = 50
+        self._pg_search   = ""
         self._load_products()
         return panel
 
@@ -163,13 +201,11 @@ class SupervisorWindow(BaseWindow):
         lay.addWidget(self.form_title)
 
         self.f_barcode = self._field("Barcode", "Scan or type barcode")
-        self.f_brand   = self._field("Brand",   "e.g. Coca Cola")
-        self.f_name    = self._field("Name",     "e.g. Coca Cola 330ml")
-        self.f_alias   = self._field("Alias",    "e.g. coca-cola (comma-separated)")
-        self.f_cost    = self._field("Cost",     "0.00")
+        self.f_name    = self._field("Name",    "e.g. COCA COLA 330ML")
+        self.f_cost    = self._field("Cost",    "0.00")
         self.f_cost[1].setValidator(QDoubleValidator(0, 999999, 2))
         self.f_cost[1].textChanged.connect(self._calc_selling_price)
-        for lbl, inp in [self.f_barcode, self.f_brand, self.f_name, self.f_alias, self.f_cost]:
+        for lbl, inp in [self.f_barcode, self.f_name, self.f_cost]:
             lay.addWidget(lbl); lay.addWidget(inp)
 
         lay.addWidget(self._flabel("Selling Price"))
@@ -178,10 +214,19 @@ class SupervisorWindow(BaseWindow):
         self.f_price_hint = QLabel(""); self.f_price_hint.setStyleSheet(f"color:{MUTED};font-size:10px;")
         lay.addWidget(self.f_price); lay.addWidget(self.f_price_hint)
 
-        lay.addWidget(self._flabel("Group"))
+        lay.addWidget(self._flabel("Product Group"))
         self.f_group = QComboBox(); self.f_group.setStyleSheet(self._combo_style())
         self.f_group.currentIndexChanged.connect(self._calc_selling_price)
         self._populate_groups(); lay.addWidget(self.f_group)
+
+        lay.addWidget(self._flabel("Alias Group  (price-linked products)"))
+        from ui.shared.searchable_group_combo import SearchableGroupCombo
+        self.f_alias_group = SearchableGroupCombo("alias")
+        lay.addWidget(self.f_alias_group)
+
+        lay.addWidget(self._flabel("Variant Group  (flavor/version siblings)"))
+        self.f_variant_group = SearchableGroupCombo("variant")
+        lay.addWidget(self.f_variant_group)
 
         lay.addWidget(self._flabel("Discount Level 1"))
         self.f_disc1 = QComboBox(); self.f_disc1.setStyleSheet(self._combo_style())
@@ -203,9 +248,21 @@ class SupervisorWindow(BaseWindow):
         self.case_box = QFrame(); self.case_box.setVisible(False)
         self.case_box.setStyleSheet(f"background:{AMBER_LIGHTEST};border:1px solid {AMBER};border-radius:6px;")
         cb_lay = QVBoxLayout(self.case_box); cb_lay.setContentsMargins(10,10,10,10); cb_lay.setSpacing(6)
+
+        cb_lay.addWidget(self._flabel("Parent Single Product"))
+        from ui.shared.searchable_product_combo import SearchableProductCombo
+        self.f_case_parent = SearchableProductCombo()
+        self.f_case_parent.selectionChanged.connect(lambda pid, name: self._on_case_parent_changed())
+        cb_lay.addWidget(self.f_case_parent)
+
+        self.f_case_cost_hint = QLabel("")
+        self.f_case_cost_hint.setStyleSheet(f"color:{MUTED};font-size:10px;")
+        cb_lay.addWidget(self.f_case_cost_hint)
+
         cb_lay.addWidget(self._flabel("Units per Case"))
         self.f_case_qty = QSpinBox(); self.f_case_qty.setMinimum(1); self.f_case_qty.setMaximum(9999)
         self.f_case_qty.setStyleSheet(self._input_style())
+        self.f_case_qty.valueChanged.connect(self._on_case_parent_changed)
         cb_lay.addWidget(self.f_case_qty)
         lay.addWidget(self.case_box)
 
@@ -226,13 +283,24 @@ class SupervisorWindow(BaseWindow):
     # ── Products: data ────────────────────────────────────────────────
 
     def _load_products(self, search=""):
-        products = get_products(search=search, limit=500)
+        from core.db_products import count_products
+        self._pg_search = search
+        total   = count_products(search=search)
+        pages   = max(1, (total + self._pg_per_page - 1) // self._pg_per_page)
+        self._pg_page = min(self._pg_page, pages - 1)
+
+        products = get_products(
+            search=search,
+            limit=self._pg_per_page,
+            offset=self._pg_page * self._pg_per_page
+        )
+
         self.product_table.setRowCount(0)
         R = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight
         C = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter
         for row, p in enumerate(products):
             self.product_table.insertRow(row)
-            self.product_table.setRowHeight(row, 36)
+            self.product_table.setRowHeight(row, 38)
             def cell(t, color=DARK_CARD, align=None):
                 c = QTableWidgetItem(str(t)); c.setForeground(QColor(color))
                 if align: c.setTextAlignment(align)
@@ -241,11 +309,10 @@ class SupervisorWindow(BaseWindow):
             typ_c = BLUE if p["is_case"] else LABEL_TEXT
             self.product_table.setItem(row, 0, cell(p["name"]))
             self.product_table.setItem(row, 1, cell(p["barcode"], MUTED))
-            self.product_table.setItem(row, 2, cell(p["brand"] or "—"))
-            self.product_table.setItem(row, 3, cell(f"${p['selling_price']:.2f}", AMBER_DARK, R))
-            self.product_table.setItem(row, 4, cell(p.get("group_name") or "—", LABEL_TEXT, C))
-            self.product_table.setItem(row, 5, cell("GCT" if p["gct_applicable"] else "No GCT", gct_c, C))
-            self.product_table.setItem(row, 6, cell("Case" if p["is_case"] else "Single", typ_c, C))
+            self.product_table.setItem(row, 2, cell(f"${p['cost']:.2f}", AMBER_DARK, R))
+            self.product_table.setItem(row, 3, cell(p.get("group_name") or "—", LABEL_TEXT, C))
+            self.product_table.setItem(row, 4, cell("GCT" if p["gct_applicable"] else "No GCT", gct_c, C))
+            self.product_table.setItem(row, 5, cell("Case" if p["is_case"] else "Single", typ_c, C))
             act = QWidget(); al = QHBoxLayout(act)
             al.setContentsMargins(4,2,4,2); al.setSpacing(4)
             for icon, color, cb in [
@@ -257,9 +324,24 @@ class SupervisorWindow(BaseWindow):
                 b.setStyleSheet(f"QPushButton{{background:transparent;color:{color};border:1px solid {color};border-radius:5px;font-size:13px;}}QPushButton:hover{{background:{color};color:white;}}")
                 b.clicked.connect(cb); al.addWidget(b)
             al.addStretch()
-            self.product_table.setCellWidget(row, 7, act)
+            self.product_table.setCellWidget(row, 6, act)
+
+        # Update pagination controls
+        self._pg_label.setText(f"Page {self._pg_page + 1} of {pages}  ({total} products)")
+        self._pg_prev_btn.setEnabled(self._pg_page > 0)
+        self._pg_next_btn.setEnabled(self._pg_page < pages - 1)
+
+    def _prev_page(self):
+        if self._pg_page > 0:
+            self._pg_page -= 1
+            self._load_products(self._pg_search)
+
+    def _next_page(self):
+        self._pg_page += 1
+        self._load_products(self._pg_search)
 
     def _search_products(self):
+        self._pg_page = 0   # reset to first page on new search
         self._load_products(self.product_search.text().strip())
 
     def _on_product_dbl_click(self, index):
@@ -272,28 +354,38 @@ class SupervisorWindow(BaseWindow):
     def _new_product_form(self):
         self._editing_product_id = None
         self.form_title.setText("➕  Add Product")
-        for _, inp in [self.f_barcode, self.f_brand, self.f_name, self.f_alias, self.f_cost]:
+        for _, inp in [self.f_barcode, self.f_name, self.f_cost]:
             inp.clear()
-        self.f_group.setCurrentIndex(0); self.f_disc1.setCurrentIndex(0); self.f_disc2.setCurrentIndex(0)
+        self.f_group.setCurrentIndex(0)
+        self.f_alias_group.clear_value()
+        self.f_variant_group.clear_value()
+        self.f_disc1.setCurrentIndex(0); self.f_disc2.setCurrentIndex(0)
         self.t_gct.setChecked(True); self.t_case.setChecked(False)
         self.f_price.clear(); self.f_price_hint.clear()
+        self.f_case_parent.clear_value()
+        self.f_case_parent.exclude_id(None)
+        self.f_case_cost_hint.setText("")
 
     def _edit_product(self, pid: int):
         p = get_product_by_id(pid)
         if not p: return
         self._editing_product_id = pid
         self.form_title.setText("✎  Edit Product")
-        self.f_barcode[1].setText(p["barcode"]); self.f_brand[1].setText(p["brand"] or "")
+        self.f_barcode[1].setText(p["barcode"])
         self.f_name[1].setText(p["name"])
-        self.f_alias[1].setText(", ".join(get_aliases(pid)))
         self.f_cost[1].setText(str(p["cost"]))
         self.f_price.setText(f"${p['selling_price']:.2f}")
         self.t_gct.setChecked(bool(p["gct_applicable"]))
         self.t_case.setChecked(bool(p["is_case"]))
-        if p["is_case"] and p.get("case_qty"): self.f_case_qty.setValue(p["case_qty"])
+        if p["is_case"]:
+            if p.get("case_qty"):
+                self.f_case_qty.setValue(p["case_qty"])
+            self._populate_case_parents(select_id=p.get("case_product_id"))
         for i in range(self.f_group.count()):
             if self.f_group.itemData(i) == p.get("group_id"):
                 self.f_group.setCurrentIndex(i); break
+        self.f_alias_group.set_value(p.get("alias_group_id"))
+        self.f_variant_group.set_value(p.get("variant_group_id"))
 
     def _save_product(self):
         barcode = self.f_barcode[1].text().strip()
@@ -302,29 +394,104 @@ class SupervisorWindow(BaseWindow):
             QMessageBox.warning(self, "Missing Fields", "Barcode and Name are required."); return
         try:    cost = float(self.f_cost[1].text() or 0)
         except: QMessageBox.warning(self, "Invalid Cost", "Enter a valid cost."); return
-        group_id = self.f_group.currentData()
+        group_id         = self.f_group.currentData()
+        alias_group_id   = self.f_alias_group.selected_id()
+        variant_group_id = self.f_variant_group.selected_id()
+
+        is_case         = self.t_case.isChecked()
+        case_product_id = self.f_case_parent.selected_id() if is_case else None
+        case_qty        = self.f_case_qty.value() if is_case else None
+
+        # If a parent is linked, derive cost from it
+        if is_case and case_product_id:
+            parent = get_product_by_id(case_product_id)
+            if parent and parent["cost"] > 0:
+                cost = round(parent["cost"] * (case_qty or 1), 4)
+                self.f_cost[1].setText(str(cost))
+
         selling_price = self._get_selling_price(cost, group_id)
-        kwargs = dict(barcode=barcode, brand=self.f_brand[1].text().strip(), name=name,
-                      cost=cost, selling_price=selling_price, group_id=group_id,
-                      discount_level1=self.f_disc1.currentData(),
-                      discount_level2=self.f_disc2.currentData(),
-                      gct_applicable=int(self.t_gct.isChecked()),
-                      is_case=int(self.t_case.isChecked()),
-                      case_qty=self.f_case_qty.value() if self.t_case.isChecked() else None)
-        aliases = [a.strip() for a in self.f_alias[1].text().split(",") if a.strip()]
+        # For linked cases use case_profit_pct instead of group margin
+        if is_case and case_product_id:
+            from core.db_config import get as cfg_get
+            try:
+                pct = float(cfg_get("case_profit_pct", "0.10"))
+            except (ValueError, TypeError):
+                pct = 0.10
+            selling_price = round(cost * (1 + pct), 2)
+
+        kwargs = dict(
+            barcode=barcode, name=name,
+            cost=cost, selling_price=selling_price,
+            group_id=group_id,
+            alias_group_id=alias_group_id,
+            variant_group_id=variant_group_id,
+            discount_level1=self.f_disc1.currentData(),
+            discount_level2=self.f_disc2.currentData(),
+            gct_applicable=int(self.t_gct.isChecked()),
+            is_case=int(is_case),
+            case_qty=case_qty,
+            case_product_id=case_product_id,
+        )
         try:
             if self._editing_product_id:
+                # Check if price changed — offer cascade if so
+                old = get_product_by_id(self._editing_product_id)
+                price_changed = old and round(old["selling_price"], 2) != round(selling_price, 2)
+                cost_changed  = old and round(old["cost"], 4) != round(cost, 4)
                 update_product(self._editing_product_id, **kwargs)
-                set_aliases(self._editing_product_id, aliases)
+                if price_changed:
+                    self._handle_price_cascade(
+                        selling_price, alias_group_id, variant_group_id
+                    )
+                # If this is a single product whose cost changed, update linked cases
+                if cost_changed and not is_case:
+                    n = cascade_single_cost_to_cases(self._editing_product_id)
+                    if n:
+                        QMessageBox.information(
+                            self, "Case Prices Updated",
+                            f"Cost change cascaded to {n} linked case product{'s' if n != 1 else ''}.\n"
+                            f"Case selling prices have been recalculated."
+                        )
                 QMessageBox.information(self, "Saved", f"'{name}' updated.")
             else:
-                pid = add_product(**kwargs)
-                if aliases: set_aliases(pid, aliases)
+                add_product(**kwargs)
                 QMessageBox.information(self, "Added", f"'{name}' added.")
                 self._new_product_form()
         except Exception as e:
             QMessageBox.critical(self, "Error", str(e))
         self._load_products(self.product_search.text())
+
+    def _handle_price_cascade(self, new_price: float,
+                               alias_group_id: int | None,
+                               variant_group_id: int | None):
+        """Offer to cascade the new price to each price group separately."""
+        for gid, label in [
+            (alias_group_id,   "Alias"),
+            (variant_group_id, "Variant"),
+        ]:
+            if not gid:
+                continue
+            # Get members excluding the product just saved
+            affected = update_price_group(gid, selling_price=new_price)
+            others   = [p for p in affected
+                        if p["id"] != self._editing_product_id]
+            if not others:
+                continue
+            names = "\n".join(f"  • {p['name']}" for p in others)
+            reply = QMessageBox.question(
+                self,
+                f"Cascade Price — {label} Group",
+                f"Selling price changed to ${new_price:.2f}.\n\n"
+                f"Apply this price to all other products in the "
+                f"{label.lower()} group?\n\n{names}",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                # Revert cascade for this group — restore original prices
+                for p in others:
+                    orig = get_product_by_id(p["id"])
+                    if orig:
+                        update_product(p["id"], selling_price=orig["selling_price"])
 
     def _delete_product(self, pid: int):
         p = get_product_by_id(pid)
@@ -356,7 +523,54 @@ class SupervisorWindow(BaseWindow):
             con.close(); return float(row[0]) if row and row[0] else 0.0
         except: return 0.0
 
-    def _on_case_toggled(self, state): self.case_box.setVisible(bool(state))
+    def _recalculate_cases(self):
+        """Recalculate all case product prices from their linked single products."""
+        from core.db_config import get as cfg_get
+        try:
+            pct = float(cfg_get("case_profit_pct", "0.10"))
+        except (ValueError, TypeError):
+            pct = 0.10
+        n = recalculate_all_cases(pct)
+        if n:
+            QMessageBox.information(
+                self, "Cases Recalculated",
+                f"{n} case product{'s' if n != 1 else ''} repriced "
+                f"at {pct*100:.1f}% markup over cost."
+            )
+        else:
+            QMessageBox.information(
+                self, "Cases Recalculated",
+                "No case products found with a linked single product and cost > 0."
+            )
+
+    def _on_case_toggled(self, state):
+        self.case_box.setVisible(bool(state))
+        if bool(state):
+            # Set exclude so the product can't link to itself
+            self.f_case_parent.exclude_id(self._editing_product_id)
+
+    def _populate_case_parents(self, select_id: int = None):
+        """Restore a saved parent selection when editing."""
+        self.f_case_parent.exclude_id(self._editing_product_id)
+        self.f_case_parent.set_value(select_id)
+        self._on_case_parent_changed()
+
+    def _on_case_parent_changed(self):
+        """Update the cost hint whenever parent or qty changes."""
+        parent_id = self.f_case_parent.selected_id()
+        qty = self.f_case_qty.value()
+        if parent_id is None:
+            self.f_case_cost_hint.setText("Cost will be set manually from the Cost field above.")
+        else:
+            parent = get_product_by_id(parent_id)
+            if parent:
+                derived = parent["cost"] * qty
+                self.f_case_cost_hint.setText(
+                    f"Cost = ${parent['cost']:.4f} × {qty} = ${derived:.4f}  "
+                    f"(auto-set on save)"
+                )
+            else:
+                self.f_case_cost_hint.setText("")
 
     def _populate_groups(self):
         self.f_group.clear(); self.f_group.addItem("— No Group —", None)
@@ -471,7 +685,7 @@ class SupervisorWindow(BaseWindow):
     def _rpt_fill_cashier_list(self, cashiers):
         self.rpt_cashier_list.setRowCount(0)
         for i, c in enumerate(cashiers):
-            self.rpt_cashier_list.insertRow(i); self.rpt_cashier_list.setRowHeight(i, 34)
+            self.rpt_cashier_list.insertRow(i); self.rpt_cashier_list.setRowHeight(i, 38)
             item = QTableWidgetItem(c["full_name"]); item.setData(Qt.ItemDataRole.UserRole, c["id"])
             item.setForeground(QColor(DARK_CARD)); self.rpt_cashier_list.setItem(i, 0, item)
 
@@ -514,7 +728,7 @@ class SupervisorWindow(BaseWindow):
         self.rpt_session_list.setRowCount(0)
         R = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight
         for i, s in enumerate(sessions):
-            self.rpt_session_list.insertRow(i); self.rpt_session_list.setRowHeight(i, 34)
+            self.rpt_session_list.insertRow(i); self.rpt_session_list.setRowHeight(i, 38)
             num = QTableWidgetItem(f"#{s['id']:04d}"); num.setData(Qt.ItemDataRole.UserRole, s["id"])
             num.setForeground(QColor(DARK_CARD))
             stat = QTableWidgetItem(s["status"].capitalize())
@@ -560,7 +774,39 @@ class SupervisorWindow(BaseWindow):
 
     def _rpt_open_session(self):
         if not self._rpt_selected_cashier_id: return
-        open_session(self._rpt_selected_cashier_id); self._rpt_refresh()
+        # Block if cashier already has an open session
+        if has_open_session(self._rpt_selected_cashier_id):
+            QMessageBox.warning(self, "Session Already Open",
+                "This cashier already has an open session.\n"
+                "Close it before opening a new one.")
+            return
+        session_id = open_session(self._rpt_selected_cashier_id, opened_by=self.user["id"])
+        # Broadcast so waiting cashier window can activate
+        from PyQt6.QtWidgets import QApplication
+        app = QApplication.instance()
+        if hasattr(app, "session_opened"):
+            app.session_opened.emit(self._rpt_selected_cashier_id)
+        self._rpt_refresh()
+
+    def _rpt_close_session(self):
+        if not self._rpt_selected_session_id: return
+        reply = QMessageBox.question(self, "Close Session",
+            "Close this cashier session?\n\n"
+            "The cashier will be notified and logged out after their next sale.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        st = session_totals(self._rpt_selected_session_id)
+        closed = close_session(self._rpt_selected_session_id,
+                               st.get("total_sales", 0),
+                               closed_by=self.user["id"])
+        if closed:
+            # Broadcast to any open cashier window via the app instance
+            from PyQt6.QtWidgets import QApplication
+            app = QApplication.instance()
+            if hasattr(app, "session_closed"):
+                app.session_closed.emit(self._rpt_selected_session_id)
+        self._rpt_refresh()
 
     def _rpt_print_session(self):
         QMessageBox.information(self, "Print", "Print session summary — printer integration coming.")
@@ -605,13 +851,30 @@ class SupervisorWindow(BaseWindow):
         self.tx_table.verticalHeader().setVisible(False); self.tx_table.setShowGrid(False)
         self.tx_table.setStyleSheet(self._table_style())
         self.tx_table.itemClicked.connect(self._tx_on_row_selected_by_item)
-        ll.addWidget(self.tx_table)
-        right = QFrame(); right.setFixedWidth(280)
+        ll.addWidget(self.tx_table, stretch=1)
+
+        # Pagination controls
+        tx_pg_row = QHBoxLayout(); tx_pg_row.setSpacing(8)
+        self._tx_pg_prev = self._outline_btn("← Prev"); self._tx_pg_prev.setFixedWidth(80)
+        self._tx_pg_prev.clicked.connect(self._tx_prev_page)
+        self._tx_pg_label = QLabel("Page 1 of 1")
+        self._tx_pg_label.setStyleSheet(f"color:{MUTED};font-size:11px;")
+        self._tx_pg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._tx_pg_next = self._outline_btn("Next →"); self._tx_pg_next.setFixedWidth(80)
+        self._tx_pg_next.clicked.connect(self._tx_next_page)
+        tx_pg_row.addStretch()
+        tx_pg_row.addWidget(self._tx_pg_prev)
+        tx_pg_row.addWidget(self._tx_pg_label)
+        tx_pg_row.addWidget(self._tx_pg_next)
+        tx_pg_row.addStretch()
+        ll.addLayout(tx_pg_row)
+
+        right = QFrame(); right.setFixedWidth(300)
         right.setStyleSheet(f"background:{WHITE};border-radius:8px;border:1px solid {BORDER};")
         rl = QVBoxLayout(right); rl.setContentsMargins(12,12,12,12); rl.setSpacing(8)
         self.tx_detail_title = QLabel("Select a transaction")
-        self.tx_detail_title.setStyleSheet(f"color:{DARK_CARD};font-size:12px;font-weight:700;")
-        self.tx_detail_meta = QLabel(""); self.tx_detail_meta.setStyleSheet(f"color:{LABEL_TEXT};font-size:11px;"); self.tx_detail_meta.setWordWrap(True)
+        self.tx_detail_title.setStyleSheet(f"color:{DARK_CARD};font-size:13px;font-weight:700;")
+        self.tx_detail_meta = QLabel(""); self.tx_detail_meta.setStyleSheet(f"color:{LABEL_TEXT};font-size:12px;"); self.tx_detail_meta.setWordWrap(True)
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine); sep.setStyleSheet(f"color:{BORDER};")
         self.tx_items_table = QTableWidget(); self.tx_items_table.setColumnCount(4)
         self.tx_items_table.setHorizontalHeaderLabels(["Item","Qty","Price","Total"])
@@ -620,23 +883,38 @@ class SupervisorWindow(BaseWindow):
         self.tx_items_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tx_items_table.verticalHeader().setVisible(False); self.tx_items_table.setShowGrid(False)
         self.tx_items_table.setStyleSheet(self._table_style())
-        self.tx_footer = QLabel(""); self.tx_footer.setStyleSheet(f"color:{LABEL_TEXT};font-size:11px;")
+        self.tx_footer = QLabel(""); self.tx_footer.setStyleSheet(f"color:{LABEL_TEXT};font-size:12px;")
         self.tx_footer.setAlignment(Qt.AlignmentFlag.AlignRight); self.tx_footer.setWordWrap(True)
         rl.addWidget(self.tx_detail_title); rl.addWidget(self.tx_detail_meta)
         rl.addWidget(sep); rl.addWidget(self.tx_items_table, stretch=1); rl.addWidget(self.tx_footer)
         splitter.addWidget(left); splitter.addWidget(right); splitter.setStretchFactor(0,1)
         lay.addWidget(splitter, stretch=1)
+
+        # Pagination state
+        self._tx_pg_page     = 0
+        self._tx_pg_per_page = 50
+        self._tx_pg_search   = ""
+        self._tx_pg_status   = ""
         self._tx_load(); return w
 
     def _tx_load(self, search="", status_filter=""):
+        self._tx_pg_search = search
+        self._tx_pg_status = status_filter
         sf = status_filter.lower() if status_filter and status_filter != "All Statuses" else None
-        receipts = get_receipts(search=search, status=sf, limit=200)
+        total = count_receipts(search=search, status=sf)
+        pages = max(1, (total + self._tx_pg_per_page - 1) // self._tx_pg_per_page)
+        self._tx_pg_page = min(self._tx_pg_page, pages - 1)
+        receipts = get_receipts(
+            search=search, status=sf,
+            limit=self._tx_pg_per_page,
+            offset=self._tx_pg_page * self._tx_pg_per_page
+        )
         self.tx_table.setRowCount(0)
         R = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight
         C = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter
         sc_map = {"completed":GREEN,"voided":RED,"refunded":AMBER_DARK}
         for i, r in enumerate(receipts):
-            self.tx_table.insertRow(i); self.tx_table.setRowHeight(i, 34)
+            self.tx_table.insertRow(i); self.tx_table.setRowHeight(i, 38)
             num = QTableWidgetItem(r["receipt_number"]); num.setData(Qt.ItemDataRole.UserRole, r["id"])
             u = get_user_by_id(r["user_id"]); cname = u["full_name"] if u else f"#{r['user_id']}"
             dt = str(r["created_at"])
@@ -649,8 +927,21 @@ class SupervisorWindow(BaseWindow):
             sc = sc_map.get(r["status"], MUTED)
             stat = QTableWidgetItem(r["status"].capitalize()); stat.setForeground(QColor(sc)); stat.setTextAlignment(C)
             self.tx_table.setItem(i, 5, stat)
+        self._tx_pg_label.setText(f"Page {self._tx_pg_page + 1} of {pages}  ({total} transactions)")
+        self._tx_pg_prev.setEnabled(self._tx_pg_page > 0)
+        self._tx_pg_next.setEnabled(self._tx_pg_page < pages - 1)
+
+    def _tx_prev_page(self):
+        if self._tx_pg_page > 0:
+            self._tx_pg_page -= 1
+            self._tx_load(self._tx_pg_search, self._tx_pg_status)
+
+    def _tx_next_page(self):
+        self._tx_pg_page += 1
+        self._tx_load(self._tx_pg_search, self._tx_pg_status)
 
     def _tx_search_fn(self):
+        self._tx_pg_page = 0
         self._tx_load(search=self.tx_search.text().strip(), status_filter=self.tx_status_filter.currentText())
 
     def _tx_on_row_selected_by_item(self, clicked_item):
@@ -719,7 +1010,23 @@ class SupervisorWindow(BaseWindow):
         self.vr_table.verticalHeader().setVisible(False); self.vr_table.setShowGrid(False)
         self.vr_table.setStyleSheet(self._table_style())
         self.vr_table.itemClicked.connect(lambda _: self._vr_on_row_selected())
-        ll.addWidget(self.vr_table)
+        ll.addWidget(self.vr_table, stretch=1)
+
+        # Pagination controls
+        vr_pg_row = QHBoxLayout(); vr_pg_row.setSpacing(8)
+        self._vr_pg_prev = self._outline_btn("← Prev"); self._vr_pg_prev.setFixedWidth(80)
+        self._vr_pg_prev.clicked.connect(self._vr_prev_page)
+        self._vr_pg_label = QLabel("Page 1 of 1")
+        self._vr_pg_label.setStyleSheet(f"color:{MUTED};font-size:11px;")
+        self._vr_pg_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._vr_pg_next = self._outline_btn("Next →"); self._vr_pg_next.setFixedWidth(80)
+        self._vr_pg_next.clicked.connect(self._vr_next_page)
+        vr_pg_row.addStretch()
+        vr_pg_row.addWidget(self._vr_pg_prev)
+        vr_pg_row.addWidget(self._vr_pg_label)
+        vr_pg_row.addWidget(self._vr_pg_next)
+        vr_pg_row.addStretch()
+        ll.addLayout(vr_pg_row)
         right = QFrame(); right.setFixedWidth(300)
         right.setStyleSheet(f"background:{WHITE};border-radius:8px;border:1px solid {BORDER};")
         rl = QVBoxLayout(right); rl.setContentsMargins(14,14,14,14); rl.setSpacing(10)
@@ -760,17 +1067,30 @@ class SupervisorWindow(BaseWindow):
         splitter.addWidget(left); splitter.addWidget(right); splitter.setStretchFactor(0,1)
         lay.addWidget(splitter, stretch=1)
         self._vr_selected_tx_id=None; self._vr_selected_tx_status=None; self._vr_items_data=[]
+        self._vr_pg_page     = 0
+        self._vr_pg_per_page = 50
+        self._vr_pg_search   = ""
+        self._vr_pg_status   = "completed"
         self._vr_load(); return w
 
     def _vr_load(self, search="", status_filter="completed"):
+        self._vr_pg_search = search
+        self._vr_pg_status = status_filter
         sf = None if status_filter == "" else status_filter
-        receipts = get_receipts(search=search, status=sf, limit=200)
+        total = count_receipts(search=search, status=sf)
+        pages = max(1, (total + self._vr_pg_per_page - 1) // self._vr_pg_per_page)
+        self._vr_pg_page = min(self._vr_pg_page, pages - 1)
+        receipts = get_receipts(
+            search=search, status=sf,
+            limit=self._vr_pg_per_page,
+            offset=self._vr_pg_page * self._vr_pg_per_page
+        )
         self.vr_table.setRowCount(0)
         R = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight
         C = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter
         sc_map = {"completed":GREEN,"voided":RED,"refunded":AMBER_DARK}
         for i, r in enumerate(receipts):
-            self.vr_table.insertRow(i); self.vr_table.setRowHeight(i, 34)
+            self.vr_table.insertRow(i); self.vr_table.setRowHeight(i, 38)
             num = QTableWidgetItem(r["receipt_number"]); num.setData(Qt.ItemDataRole.UserRole, r["id"])
             u = get_user_by_id(r["user_id"]); cname = u["full_name"] if u else "—"
             dt = str(r["created_at"])
@@ -778,8 +1098,21 @@ class SupervisorWindow(BaseWindow):
             self.vr_table.setItem(i, 2, QTableWidgetItem(dt[:10])); self.vr_table.setItem(i, 3, QTableWidgetItem(dt[11:19]))
             tot = QTableWidgetItem(f"${r['total']:.2f}"); tot.setForeground(QColor(AMBER)); tot.setTextAlignment(R); self.vr_table.setItem(i, 4, tot)
             sc = sc_map.get(r["status"], MUTED); stat = QTableWidgetItem(r["status"].capitalize()); stat.setForeground(QColor(sc)); stat.setTextAlignment(C); self.vr_table.setItem(i, 5, stat)
+        self._vr_pg_label.setText(f"Page {self._vr_pg_page + 1} of {pages}  ({total} receipts)")
+        self._vr_pg_prev.setEnabled(self._vr_pg_page > 0)
+        self._vr_pg_next.setEnabled(self._vr_pg_page < pages - 1)
+
+    def _vr_prev_page(self):
+        if self._vr_pg_page > 0:
+            self._vr_pg_page -= 1
+            self._vr_load(self._vr_pg_search, self._vr_pg_status)
+
+    def _vr_next_page(self):
+        self._vr_pg_page += 1
+        self._vr_load(self._vr_pg_search, self._vr_pg_status)
 
     def _vr_search_fn(self):
+        self._vr_pg_page = 0
         sf = "completed" if self.vr_status_filter.currentIndex()==0 else ""
         self._vr_load(search=self.vr_search.text().strip(), status_filter=sf)
 
@@ -833,6 +1166,13 @@ class SupervisorWindow(BaseWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply != QMessageBox.StandardButton.Yes: return
         if void_receipt(self._vr_selected_tx_id, self.user["id"], reason):
+            # Increment stock for all items in the voided receipt
+            from core.db_config import get_bool
+            if get_bool("stock_tracking", False):
+                from core.db_products import increment_stock
+                for it in (self._vr_items_data or []):
+                    if it.get("product_id"):
+                        increment_stock(it["product_id"], it["quantity"])
             self._vr_selected_tx_status="voided"; self.vr_void_btn.setEnabled(False); self.vr_refund_btn.setEnabled(False)
             self.vr_status_banner.setText(f"✓  Receipt #{self._vr_selected_tx_id} voided."); self.vr_status_banner.setStyleSheet(f"color:{RED};font-size:12px;font-weight:600;"); self.vr_status_banner.setVisible(True)
             self._vr_search_fn()
@@ -855,6 +1195,13 @@ class SupervisorWindow(BaseWindow):
         if reply != QMessageBox.StandardButton.Yes: return
         rtype = "partial" if is_partial else "full"
         if refund_receipt(self._vr_selected_tx_id, self.user["id"], reason, amount, rtype):
+            # Increment stock for refunded items
+            from core.db_config import get_bool
+            if get_bool("stock_tracking", False):
+                from core.db_products import increment_stock
+                for it in items:
+                    if it.get("product_id"):
+                        increment_stock(it["product_id"], it["quantity"])
             self.vr_void_btn.setEnabled(False); self.vr_refund_btn.setEnabled(False)
             self.vr_status_banner.setText(f"✓  {mode} refund of ${amount:.2f} issued."); self.vr_status_banner.setStyleSheet(f"color:{AMBER};font-size:12px;font-weight:600;"); self.vr_status_banner.setVisible(True)
             self._vr_search_fn()
@@ -980,9 +1327,12 @@ class SupervisorWindow(BaseWindow):
         b.setStyleSheet(f"QPushButton{{background:{WARM_WHITE};color:{LABEL_TEXT};border:1px solid {BORDER};border-radius:17px;font-size:16px;font-weight:700;}}QPushButton:hover{{border-color:{AMBER};color:{AMBER};}}")
         return b
 
-    def _field(self, label, placeholder):
+    def _field(self, label, placeholder, uppercase=True):
         lbl = self._flabel(label)
-        inp = QLineEdit(); inp.setPlaceholderText(placeholder); inp.setFixedHeight(34)
+        if uppercase:
+            inp = self.make_upper_input(placeholder)
+        else:
+            inp = QLineEdit(); inp.setPlaceholderText(placeholder); inp.setFixedHeight(34)
         inp.setStyleSheet(self._input_style()); return lbl, inp
 
     def _flabel(self, text):
