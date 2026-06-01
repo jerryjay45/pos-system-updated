@@ -1015,7 +1015,8 @@ class CashierWindow(BaseWindow):
 
     def _reprint_last(self):
         if not self._last_txn_id: return
-        QMessageBox.information(self, "Reprint", f"Reprinting receipt #{self._last_txn_id}…\n(Printer integration coming)")
+        from utils.print_manager import reprint_receipt
+        reprint_receipt(self._last_txn_id, parent=self)
 
     # ================================================================
     # PRICE CHECK

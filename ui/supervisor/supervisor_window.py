@@ -126,19 +126,18 @@ class SupervisorWindow(BaseWindow):
         refresh_btn = self._icon_btn("↻", "Refresh")
         refresh_btn.clicked.connect(lambda: (setattr(self, '_pg_page', 0), self._load_products(self.product_search.text())))
 
-        recalc_btn = QPushButton("⟳ Cases")
+        recalc_btn = QPushButton("⟳ Recalc Cases")
         recalc_btn.setFixedHeight(34)
-        recalc_btn.setFixedWidth(74)
         recalc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         recalc_btn.setToolTip("Recalculate all case product prices from their linked single products")
         recalc_btn.setStyleSheet(
-            f"QPushButton{{background:transparent;color:{AMBER_DARK};border:1px solid {AMBER};"
-            f"border-radius:7px;font-size:11px;font-weight:600;}}"
+            f"QPushButton{{background:transparent;color:{AMBER_DARK};border:1.5px solid {AMBER};"
+            f"border-radius:7px;font-size:12px;font-weight:600;padding:0 10px;}}"
             f"QPushButton:hover{{background:{AMBER_LIGHTEST};}}"
         )
         recalc_btn.clicked.connect(self._recalculate_cases)
 
-        add_btn = QPushButton("+ Add Product"); add_btn.setFixedHeight(34)
+        add_btn = QPushButton("＋  Add Product"); add_btn.setFixedHeight(34)
         add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         add_btn.setStyleSheet(self._accent_btn())
         add_btn.clicked.connect(self._new_product_form)
@@ -153,7 +152,8 @@ class SupervisorWindow(BaseWindow):
             ["Name","Barcode","Cost","Group","GCT","Type","Actions"])
         hh = self.product_table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for col, w_ in enumerate([120,80,90,60,60,80], start=1):
+        col_widths = {1: 130, 2: 90, 3: 110, 4: 65, 5: 70, 6: 90}
+        for col, w_ in col_widths.items():
             hh.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
             self.product_table.setColumnWidth(col, w_)
         self.product_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -191,7 +191,7 @@ class SupervisorWindow(BaseWindow):
         return panel
 
     def _build_product_form(self):
-        scroll = QScrollArea(); scroll.setFixedWidth(280); scroll.setWidgetResizable(True)
+        scroll = QScrollArea(); scroll.setMinimumWidth(280); scroll.setMaximumWidth(360); scroll.setWidgetResizable(True)
         scroll.setStyleSheet(f"QScrollArea{{background:{WHITE};border:1px solid {BORDER};border-radius:10px;}}")
         fw = QWidget(); fw.setStyleSheet(f"background:{WHITE};")
         lay = QVBoxLayout(fw); lay.setContentsMargins(14,14,14,14); lay.setSpacing(10)
@@ -315,13 +315,13 @@ class SupervisorWindow(BaseWindow):
             self.product_table.setItem(row, 5, cell("Case" if p["is_case"] else "Single", typ_c, C))
             act = QWidget(); al = QHBoxLayout(act)
             al.setContentsMargins(4,2,4,2); al.setSpacing(4)
-            for icon, color, cb in [
-                ("✎", AMBER, lambda _, pid=p["id"]: self._edit_product(pid)),
-                ("✕", RED,   lambda _, pid=p["id"]: self._delete_product(pid)),
+            for label, color, cb in [
+                ("Edit", AMBER, lambda _, pid=p["id"]: self._edit_product(pid)),
+                ("Del",  RED,   lambda _, pid=p["id"]: self._delete_product(pid)),
             ]:
-                b = QPushButton(icon); b.setFixedSize(26,26)
+                b = QPushButton(label); b.setFixedHeight(26); b.setFixedWidth(36)
                 b.setCursor(Qt.CursorShape.PointingHandCursor)
-                b.setStyleSheet(f"QPushButton{{background:transparent;color:{color};border:1px solid {color};border-radius:5px;font-size:13px;}}QPushButton:hover{{background:{color};color:white;}}")
+                b.setStyleSheet(f"QPushButton{{background:transparent;color:{color};border:1.5px solid {color};border-radius:5px;font-size:11px;font-weight:700;}}QPushButton:hover{{background:{color};color:white;}}")
                 b.clicked.connect(cb); al.addWidget(b)
             al.addStretch()
             self.product_table.setCellWidget(row, 6, act)
@@ -365,6 +365,8 @@ class SupervisorWindow(BaseWindow):
         self.f_case_parent.clear_value()
         self.f_case_parent.exclude_id(None)
         self.f_case_cost_hint.setText("")
+        self.f_group.setEnabled(True)
+        self.f_group.setToolTip("")
 
     def _edit_product(self, pid: int):
         p = get_product_by_id(pid)
@@ -381,6 +383,16 @@ class SupervisorWindow(BaseWindow):
             if p.get("case_qty"):
                 self.f_case_qty.setValue(p["case_qty"])
             self._populate_case_parents(select_id=p.get("case_product_id"))
+            # Lock group if a parent is linked, otherwise leave it editable
+            if p.get("case_product_id"):
+                self.f_group.setEnabled(False)
+                self.f_group.setToolTip(
+                    "Group is inherited from the parent single product.\n"
+                    "Change the parent to change the group."
+                )
+            else:
+                self.f_group.setEnabled(True)
+                self.f_group.setToolTip("")
         for i in range(self.f_group.count()):
             if self.f_group.itemData(i) == p.get("group_id"):
                 self.f_group.setCurrentIndex(i); break
@@ -434,16 +446,16 @@ class SupervisorWindow(BaseWindow):
         )
         try:
             if self._editing_product_id:
-                # Check if price changed — offer cascade if so
                 old = get_product_by_id(self._editing_product_id)
                 price_changed = old and round(old["selling_price"], 2) != round(selling_price, 2)
                 cost_changed  = old and round(old["cost"], 4) != round(cost, 4)
                 update_product(self._editing_product_id, **kwargs)
-                if price_changed:
-                    self._handle_price_cascade(
-                        selling_price, alias_group_id, variant_group_id
+                # Sync all group members if cost or price changed
+                if (price_changed or cost_changed) and (alias_group_id or variant_group_id):
+                    self._sync_group_members(
+                        cost, selling_price, alias_group_id, variant_group_id
                     )
-                # If this is a single product whose cost changed, update linked cases
+                # Cascade cost change to linked case products
                 if cost_changed and not is_case:
                     n = cascade_single_cost_to_cases(self._editing_product_id)
                     if n:
@@ -461,37 +473,36 @@ class SupervisorWindow(BaseWindow):
             QMessageBox.critical(self, "Error", str(e))
         self._load_products(self.product_search.text())
 
-    def _handle_price_cascade(self, new_price: float,
-                               alias_group_id: int | None,
-                               variant_group_id: int | None):
-        """Offer to cascade the new price to each price group separately."""
-        for gid, label in [
-            (alias_group_id,   "Alias"),
-            (variant_group_id, "Variant"),
-        ]:
-            if not gid:
-                continue
-            # Get members excluding the product just saved
-            affected = update_price_group(gid, selling_price=new_price)
-            others   = [p for p in affected
-                        if p["id"] != self._editing_product_id]
-            if not others:
-                continue
-            names = "\n".join(f"  • {p['name']}" for p in others)
-            reply = QMessageBox.question(
-                self,
-                f"Cascade Price — {label} Group",
-                f"Selling price changed to ${new_price:.2f}.\n\n"
-                f"Apply this price to all other products in the "
-                f"{label.lower()} group?\n\n{names}",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+    def _sync_group_members(self, cost: float, selling_price: float,
+                            alias_group_id: int | None,
+                            variant_group_id: int | None):
+        """Silently sync cost and selling_price to all members of each group.
+
+        Alias and variant groups are defined as always having the same cost
+        and selling price — no confirmation needed, just apply immediately.
+        """
+        group_ids = [g for g in (alias_group_id, variant_group_id) if g]
+        if not group_ids:
+            return
+
+        updated = []
+        for gid in group_ids:
+            members = [
+                p for p in get_products(limit=5000)
+                if (p.get("alias_group_id") == gid or p.get("variant_group_id") == gid)
+                and p["id"] != self._editing_product_id
+            ]
+            for p in members:
+                update_product(p["id"], cost=cost, selling_price=selling_price)
+                updated.append(p["name"])
+            update_price_group(gid, selling_price=selling_price)
+
+        if updated:
+            names = ", ".join(updated)
+            QMessageBox.information(
+                self, "Group Synced",
+                f"Cost (${cost:.4f}) and price (${selling_price:.2f}) synced to:\n{names}"
             )
-            if reply != QMessageBox.StandardButton.Yes:
-                # Revert cascade for this group — restore original prices
-                for p in others:
-                    orig = get_product_by_id(p["id"])
-                    if orig:
-                        update_product(p["id"], selling_price=orig["selling_price"])
 
     def _delete_product(self, pid: int):
         p = get_product_by_id(pid)
@@ -546,8 +557,13 @@ class SupervisorWindow(BaseWindow):
     def _on_case_toggled(self, state):
         self.case_box.setVisible(bool(state))
         if bool(state):
-            # Set exclude so the product can't link to itself
             self.f_case_parent.exclude_id(self._editing_product_id)
+        else:
+            # Case turned off — unlock group picker and clear parent
+            self.f_case_parent.clear_value()
+            self.f_case_cost_hint.setText("")
+            self.f_group.setEnabled(True)
+            self.f_group.setToolTip("")
 
     def _populate_case_parents(self, select_id: int = None):
         """Restore a saved parent selection when editing."""
@@ -556,11 +572,15 @@ class SupervisorWindow(BaseWindow):
         self._on_case_parent_changed()
 
     def _on_case_parent_changed(self):
-        """Update the cost hint whenever parent or qty changes."""
+        """Update cost hint and inherit group from parent when a parent is selected."""
         parent_id = self.f_case_parent.selected_id()
         qty = self.f_case_qty.value()
+
         if parent_id is None:
             self.f_case_cost_hint.setText("Cost will be set manually from the Cost field above.")
+            # Re-enable group picker — case has no parent so it manages its own group
+            self.f_group.setEnabled(True)
+            self.f_group.setToolTip("")
         else:
             parent = get_product_by_id(parent_id)
             if parent:
@@ -568,6 +588,17 @@ class SupervisorWindow(BaseWindow):
                 self.f_case_cost_hint.setText(
                     f"Cost = ${parent['cost']:.4f} × {qty} = ${derived:.4f}  "
                     f"(auto-set on save)"
+                )
+                # Inherit parent's group and lock the picker
+                parent_group = parent.get("group_id")
+                for i in range(self.f_group.count()):
+                    if self.f_group.itemData(i) == parent_group:
+                        self.f_group.setCurrentIndex(i)
+                        break
+                self.f_group.setEnabled(False)
+                self.f_group.setToolTip(
+                    "Group is inherited from the parent single product.\n"
+                    "Change the parent to change the group."
                 )
             else:
                 self.f_case_cost_hint.setText("")
@@ -596,7 +627,7 @@ class SupervisorWindow(BaseWindow):
         lay = QHBoxLayout(w); lay.setContentsMargins(8,8,8,8); lay.setSpacing(8)
 
         # Left: cashier list
-        left = QFrame(); left.setFixedWidth(220)
+        left = QFrame(); left.setMinimumWidth(220); left.setMaximumWidth(280)
         left.setStyleSheet(f"background:{WHITE};border-radius:10px;border:1px solid {BORDER};")
         ll = QVBoxLayout(left); ll.setContentsMargins(10,10,10,10); ll.setSpacing(8)
         ll.addWidget(self._section_lbl("Cashiers"))
@@ -638,32 +669,33 @@ class SupervisorWindow(BaseWindow):
             cl.addWidget(t); cl.addWidget(v); self.rpt_cards[key] = v; cards.addWidget(card)
         rl.addLayout(cards)
 
-        # Action bar
-        sb = QHBoxLayout(); sb.setSpacing(8)
+        # Action bar — split across two rows to avoid overflow
+        sb1 = QHBoxLayout(); sb1.setSpacing(8)
         self.rpt_session_header = QLabel("Select a cashier")
         self.rpt_session_header.setStyleSheet(f"color:{LABEL_TEXT};font-size:12px;font-weight:600;")
         self.rpt_search_bar = QLineEdit()
         self.rpt_search_bar.setPlaceholderText("🔍  Date or session #…")
-        self.rpt_search_bar.setFixedHeight(28); self.rpt_search_bar.setFixedWidth(160)
+        self.rpt_search_bar.setFixedHeight(30)
         self.rpt_search_bar.setStyleSheet(self._input_style())
         self.rpt_search_bar.textChanged.connect(self._rpt_filter_sessions)
         self.rpt_refresh_btn = self._outline_btn("↻  Refresh"); self.rpt_refresh_btn.clicked.connect(self._rpt_refresh)
-        self.rpt_close_btn   = self._danger_btn("Close Session"); self.rpt_close_btn.setEnabled(False); self.rpt_close_btn.clicked.connect(self._rpt_close_session)
-        self.rpt_open_btn    = self._success_btn("Open New Session"); self.rpt_open_btn.setEnabled(False); self.rpt_open_btn.clicked.connect(self._rpt_open_session)
-        self.rpt_print_btn   = self._outline_btn("🖨  Print Summary"); self.rpt_print_btn.setEnabled(False); self.rpt_print_btn.clicked.connect(self._rpt_print_session)
-        sb.addWidget(self.rpt_session_header); sb.addStretch()
-        for w_ in [self.rpt_search_bar,self.rpt_refresh_btn,self.rpt_close_btn,self.rpt_open_btn,self.rpt_print_btn]:
-            sb.addWidget(w_)
-        rl.addLayout(sb)
+        sb1.addWidget(self.rpt_session_header); sb1.addStretch()
+        sb1.addWidget(self.rpt_search_bar); sb1.addWidget(self.rpt_refresh_btn)
+        rl.addLayout(sb1)
+
+        sb2 = QHBoxLayout(); sb2.setSpacing(8)
+        self.rpt_close_btn   = self._danger_btn("✕  Close Session"); self.rpt_close_btn.setEnabled(False); self.rpt_close_btn.clicked.connect(self._rpt_close_session)
+        self.rpt_open_btn    = self._success_btn("＋  Open Session"); self.rpt_open_btn.setEnabled(False); self.rpt_open_btn.clicked.connect(self._rpt_open_session)
+        self.rpt_print_btn   = self._outline_btn("🖨  Print"); self.rpt_print_btn.setEnabled(False); self.rpt_print_btn.clicked.connect(self._rpt_print_session)
+        sb2.addStretch()
+        sb2.addWidget(self.rpt_close_btn); sb2.addWidget(self.rpt_open_btn); sb2.addWidget(self.rpt_print_btn)
+        rl.addLayout(sb2)
 
         self.rpt_session_list = QTableWidget(); self.rpt_session_list.setColumnCount(5)
         self.rpt_session_list.setHorizontalHeaderLabels(["Session","Status","Opened","Closed","Sales"])
         hh = self.rpt_session_list.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        for c in range(5):
+            hh.setSectionResizeMode(c, QHeaderView.ResizeMode.Stretch)
         self.rpt_session_list.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.rpt_session_list.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.rpt_session_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -762,16 +794,6 @@ class SupervisorWindow(BaseWindow):
     def _rpt_refresh(self):
         if self._rpt_selected_cashier_id: self._rpt_load_sessions(self._rpt_selected_cashier_id)
 
-    def _rpt_close_session(self):
-        if not self._rpt_selected_session_id: return
-        reply = QMessageBox.question(self, "Close Session", "Close this cashier session?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
-            # Pass real sales total from receipts
-            st = session_totals(self._rpt_selected_session_id)
-            close_session(self._rpt_selected_session_id, st.get("total_sales", 0))
-            self._rpt_refresh()
-
     def _rpt_open_session(self):
         if not self._rpt_selected_cashier_id: return
         # Block if cashier already has an open session
@@ -809,7 +831,12 @@ class SupervisorWindow(BaseWindow):
         self._rpt_refresh()
 
     def _rpt_print_session(self):
-        QMessageBox.information(self, "Print", "Print session summary — printer integration coming.")
+        if not self._rpt_selected_session_id: return
+        from core.db_users import get_session_by_id
+        session = get_session_by_id(self._rpt_selected_session_id)
+        if not session: return
+        from utils.print_manager import print_session
+        print_session(session, parent=self)
 
     # ================================================================
     # TRANSACTIONS TAB
@@ -842,9 +869,8 @@ class SupervisorWindow(BaseWindow):
         self.tx_table = QTableWidget(); self.tx_table.setColumnCount(6)
         self.tx_table.setHorizontalHeaderLabels(["Receipt #","Cashier","Date","Time","Total","Status"])
         hh = self.tx_table.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for c in [2,3,4,5]: hh.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+        for c in range(6):
+            hh.setSectionResizeMode(c, QHeaderView.ResizeMode.Stretch)
         self.tx_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.tx_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tx_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -869,7 +895,8 @@ class SupervisorWindow(BaseWindow):
         tx_pg_row.addStretch()
         ll.addLayout(tx_pg_row)
 
-        right = QFrame(); right.setFixedWidth(300)
+        right = QFrame()
+        right.setMinimumWidth(360); right.setMaximumWidth(500)
         right.setStyleSheet(f"background:{WHITE};border-radius:8px;border:1px solid {BORDER};")
         rl = QVBoxLayout(right); rl.setContentsMargins(12,12,12,12); rl.setSpacing(8)
         self.tx_detail_title = QLabel("Select a transaction")
@@ -878,8 +905,8 @@ class SupervisorWindow(BaseWindow):
         sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine); sep.setStyleSheet(f"color:{BORDER};")
         self.tx_items_table = QTableWidget(); self.tx_items_table.setColumnCount(4)
         self.tx_items_table.setHorizontalHeaderLabels(["Item","Qty","Price","Total"])
-        hh2 = self.tx_items_table.horizontalHeader(); hh2.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for c in [1,2,3]: hh2.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+        hh2 = self.tx_items_table.horizontalHeader()
+        for c in range(4): hh2.setSectionResizeMode(c, QHeaderView.ResizeMode.Stretch)
         self.tx_items_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.tx_items_table.verticalHeader().setVisible(False); self.tx_items_table.setShowGrid(False)
         self.tx_items_table.setStyleSheet(self._table_style())
@@ -887,7 +914,8 @@ class SupervisorWindow(BaseWindow):
         self.tx_footer.setAlignment(Qt.AlignmentFlag.AlignRight); self.tx_footer.setWordWrap(True)
         rl.addWidget(self.tx_detail_title); rl.addWidget(self.tx_detail_meta)
         rl.addWidget(sep); rl.addWidget(self.tx_items_table, stretch=1); rl.addWidget(self.tx_footer)
-        splitter.addWidget(left); splitter.addWidget(right); splitter.setStretchFactor(0,1)
+        splitter.addWidget(left); splitter.addWidget(right)
+        splitter.setStretchFactor(0, 1); splitter.setSizes([700, 400])
         lay.addWidget(splitter, stretch=1)
 
         # Pagination state
@@ -1001,9 +1029,8 @@ class SupervisorWindow(BaseWindow):
         self.vr_table = QTableWidget(); self.vr_table.setColumnCount(6)
         self.vr_table.setHorizontalHeaderLabels(["Receipt #","Cashier","Date","Time","Total","Status"])
         hh = self.vr_table.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for c in [2,3,4,5]: hh.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+        for c in range(6):
+            hh.setSectionResizeMode(c, QHeaderView.ResizeMode.Stretch)
         self.vr_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.vr_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.vr_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1027,7 +1054,8 @@ class SupervisorWindow(BaseWindow):
         vr_pg_row.addWidget(self._vr_pg_next)
         vr_pg_row.addStretch()
         ll.addLayout(vr_pg_row)
-        right = QFrame(); right.setFixedWidth(300)
+        right = QFrame()
+        right.setMinimumWidth(380); right.setMaximumWidth(520)
         right.setStyleSheet(f"background:{WHITE};border-radius:8px;border:1px solid {BORDER};")
         rl = QVBoxLayout(right); rl.setContentsMargins(14,14,14,14); rl.setSpacing(10)
         self.vr_receipt_title = QLabel("Select a receipt")
@@ -1038,8 +1066,7 @@ class SupervisorWindow(BaseWindow):
         self.vr_items_table.setHorizontalHeaderLabels(["✓","Item","Qty","Price","Total"])
         hh2 = self.vr_items_table.horizontalHeader()
         hh2.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        hh2.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        for c in [2,3,4]: hh2.setSectionResizeMode(c, QHeaderView.ResizeMode.ResizeToContents)
+        for c in [1,2,3,4]: hh2.setSectionResizeMode(c, QHeaderView.ResizeMode.Stretch)
         self.vr_items_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.vr_items_table.verticalHeader().setVisible(False); self.vr_items_table.setShowGrid(False)
         self.vr_items_table.setStyleSheet(self._table_style())
@@ -1064,7 +1091,8 @@ class SupervisorWindow(BaseWindow):
         self.vr_refund_btn.setStyleSheet(f"QPushButton{{background:{AMBER};color:white;border:none;border-radius:16px;font-size:11px;font-weight:600;padding:0 14px;}}QPushButton:hover{{background:{AMBER_DARK};}}QPushButton:disabled{{background:{MUTED};}}")
         self.vr_refund_btn.setEnabled(False); self.vr_refund_btn.clicked.connect(self._vr_do_refund)
         btn_row.addWidget(self.vr_void_btn); btn_row.addWidget(self.vr_refund_btn); rl.addLayout(btn_row)
-        splitter.addWidget(left); splitter.addWidget(right); splitter.setStretchFactor(0,1)
+        splitter.addWidget(left); splitter.addWidget(right)
+        splitter.setStretchFactor(0, 1); splitter.setSizes([600, 420])
         lay.addWidget(splitter, stretch=1)
         self._vr_selected_tx_id=None; self._vr_selected_tx_status=None; self._vr_items_data=[]
         self._vr_pg_page     = 0
@@ -1173,6 +1201,14 @@ class SupervisorWindow(BaseWindow):
                 for it in (self._vr_items_data or []):
                     if it.get("product_id"):
                         increment_stock(it["product_id"], it["quantity"])
+            # Print void notice
+            receipt = get_receipt_by_id(self._vr_selected_tx_id)
+            if receipt:
+                from core.db_checkout import get_refunds_for_receipt
+                refunds = get_refunds_for_receipt(receipt["id"])
+                refund  = refunds[0] if refunds else {"reason": reason}
+                from utils.print_manager import print_void
+                print_void(receipt, refund, voided_by_user=self.user, parent=self)
             self._vr_selected_tx_status="voided"; self.vr_void_btn.setEnabled(False); self.vr_refund_btn.setEnabled(False)
             self.vr_status_banner.setText(f"✓  Receipt #{self._vr_selected_tx_id} voided."); self.vr_status_banner.setStyleSheet(f"color:{RED};font-size:12px;font-weight:600;"); self.vr_status_banner.setVisible(True)
             self._vr_search_fn()
@@ -1202,6 +1238,14 @@ class SupervisorWindow(BaseWindow):
                 for it in items:
                     if it.get("product_id"):
                         increment_stock(it["product_id"], it["quantity"])
+            # Print refund receipt
+            receipt = get_receipt_by_id(self._vr_selected_tx_id)
+            if receipt:
+                from core.db_checkout import get_refunds_for_receipt
+                refunds = get_refunds_for_receipt(receipt["id"])
+                refund_rec = refunds[0] if refunds else {"reason": reason, "amount": amount, "refund_type": rtype}
+                from utils.print_manager import print_refund
+                print_refund(receipt, refund_rec, refunded_by_user=self.user, parent=self)
             self.vr_void_btn.setEnabled(False); self.vr_refund_btn.setEnabled(False)
             self.vr_status_banner.setText(f"✓  {mode} refund of ${amount:.2f} issued."); self.vr_status_banner.setStyleSheet(f"color:{AMBER};font-size:12px;font-weight:600;"); self.vr_status_banner.setVisible(True)
             self._vr_search_fn()
@@ -1324,7 +1368,7 @@ class SupervisorWindow(BaseWindow):
 
     def _icon_btn(self, icon, tooltip=""):
         b = QPushButton(icon); b.setFixedSize(34,34); b.setToolTip(tooltip); b.setCursor(Qt.CursorShape.PointingHandCursor)
-        b.setStyleSheet(f"QPushButton{{background:{WARM_WHITE};color:{LABEL_TEXT};border:1px solid {BORDER};border-radius:17px;font-size:16px;font-weight:700;}}QPushButton:hover{{border-color:{AMBER};color:{AMBER};}}")
+        b.setStyleSheet(f"QPushButton{{background:{WARM_WHITE};color:{DARK_CARD};border:1.5px solid {BORDER};border-radius:7px;font-size:14px;font-weight:700;}}QPushButton:hover{{border-color:{AMBER};color:{AMBER};}}")
         return b
 
     def _field(self, label, placeholder, uppercase=True):

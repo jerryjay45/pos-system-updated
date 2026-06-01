@@ -1,10 +1,20 @@
 """
 utils/print_manager.py
-Receipt and label printing manager.
+Central print manager — all printing goes through here.
 
-Currently a stub — real printer integration comes later.
-The checkout dialog calls print_receipt() non-blocking,
-so if printing fails the transaction still saves cleanly.
+Public API
+----------
+print_receipt(receipt, parent)          — sale receipt after checkout
+print_void(receipt, refund, user, parent) — void notice
+print_refund(receipt, refund, user, parent) — refund receipt
+print_session(session, parent)          — session summary / Z-report
+reprint_receipt(receipt_number, parent) — reprint any past receipt
+
+All functions:
+  - Return True on success, False on failure
+  - Never raise — failures are logged and silently swallowed so a
+    print error never rolls back a transaction
+  - Save a .txt copy to receipts/ regardless of printer state
 """
 
 from __future__ import annotations
@@ -13,159 +23,195 @@ from datetime import datetime
 from config import RECEIPT_DIR
 
 
-# ── Receipt printing ──────────────────────────────────────────────────────────
+# ── Internal helpers ──────────────────────────────────────────────────────────
 
-def print_receipt(receipt: dict, printer_name: str = "", parent=None) -> bool:
-    """
-    Print a receipt to the configured thermal or normal printer.
-    Falls back to saving a text file in receipts/ if no printer is set.
+def _get_biz_and_currency() -> tuple[dict, str]:
+    from core.db_config import get_business, get as cfg_get
+    return get_business(), cfg_get("currency_symbol", "$")
 
-    Returns True on success, False on failure.
-    """
+
+def _save_text(filename: str, text: str):
+    """Always save a .txt copy to receipts/."""
+    os.makedirs(RECEIPT_DIR, exist_ok=True)
+    fpath = os.path.join(RECEIPT_DIR, filename)
     try:
-        text = _format_receipt_text(receipt)
+        with open(fpath, "w", encoding="utf-8") as f:
+            f.write(text)
+    except Exception as e:
+        print(f"[PrintManager] Could not save text copy: {e}")
 
-        # Save text copy regardless
-        _save_receipt_text(receipt["receipt_number"], text)
 
-        if not printer_name:
-            from core.db_config import get as cfg_get
-            printer_name = cfg_get("thermal_printer_name", "")
+def _send_to_printer(text: str, parent=None) -> bool:
+    """
+    Send text to the configured thermal printer.
+    Returns True on success, False if no printer or on error.
+    Shows a user-friendly error dialog if parent is provided.
+    """
+    from utils.thermal_printer import ThermalPrinter, PrinterError
+    printer = ThermalPrinter.from_config()
 
-        if printer_name:
-            return _print_to_printer(printer_name, text)
-
-        # No printer configured — silently succeed (text already saved)
+    if not printer.is_configured:
+        # No printer set — silent success (text already saved)
         return True
 
+    try:
+        with printer as p:
+            p.print_text(text)
+            p.cut()
+        return True
+
+    except PrinterError as e:
+        print(f"[PrintManager] Printer error: {e}")
+        if parent:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                parent, "Printer Error",
+                f"Could not print to '{printer._name}'.\n\n{e}\n\n"
+                f"A text copy has been saved to the receipts folder."
+            )
+        return False
+
     except Exception as e:
-        print(f"[PrintManager] Receipt print error: {e}")
+        print(f"[PrintManager] Unexpected print error: {e}")
         return False
 
 
-def _format_receipt_text(receipt: dict) -> str:
-    from core.db_config import get_business, get as cfg_get
-    biz     = get_business()
-    width   = 42
-    div     = "─" * width
-    c       = lambda s: s.center(width)
-    r       = lambda l, v: f"{l:<{width-len(str(v))}}{v}"
-    lines   = []
+def _stamp() -> str:
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    lines.append(c(biz.get("name", "POS System")))
-    if biz.get("address"): lines.append(c(biz["address"]))
-    if biz.get("phone"):   lines.append(c(f"Tel: {biz['phone']}"))
-    if biz.get("tax_id"):  lines.append(c(f"TRN: {biz['tax_id']}"))
-    lines.append(div)
-
-    lines.append(r("Receipt:", receipt["receipt_number"]))
-    lines.append(r("Date:", str(receipt["created_at"])[:16]))
-    lines.append(r("Method:", receipt["payment_method"].capitalize()))
-    lines.append(div)
-
-    lines.append(f"{'Item':<22}{'Qty':>4}{'Price':>8}{'Total':>8}")
-    lines.append(div)
-    for item in receipt.get("items", []):
-        name = item["product_name"][:21]
-        lines.append(f"{name:<22}{item['quantity']:>4}{item['unit_price']:>8.2f}{item['line_total']:>8.2f}")
-
-    lines.append(div)
-    lines.append(r("Subtotal:", f"${receipt['subtotal']:.2f}"))
-    lines.append(r("GCT:",      f"${receipt['gct_amount']:.2f}"))
-    if receipt.get("discount_amount", 0) > 0:
-        lines.append(r("Discount:", f"-${receipt['discount_amount']:.2f}"))
-    lines.append(r("TOTAL:",    f"${receipt['total']:.2f}"))
-
-    if receipt.get("cash_tendered"):
-        lines.append(r("Cash:",   f"${receipt['cash_tendered']:.2f}"))
-    if receipt.get("change_given") and receipt["change_given"] > 0:
-        lines.append(r("Change:", f"${receipt['change_given']:.2f}"))
-    if receipt.get("card_amount"):
-        lines.append(r("Card:",   f"${receipt['card_amount']:.2f}"))
-
-    lines.append(div)
-    footer = biz.get("receipt_footer", "Thank you for your business!")
-    lines.append(c(footer))
-    lines.append("")
-
-    return "\n".join(lines)
+def _safe_num(receipt_number: str) -> str:
+    return receipt_number.replace("#", "").replace("/", "-").strip()
 
 
-def _save_receipt_text(receipt_number: str, text: str):
-    """Save receipt as a .txt file in the receipts directory."""
-    os.makedirs(RECEIPT_DIR, exist_ok=True)
-    safe_num = receipt_number.replace("#", "").replace("/", "-")
-    fname    = f"receipt_{safe_num}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-    fpath    = os.path.join(RECEIPT_DIR, fname)
-    with open(fpath, "w", encoding="utf-8") as f:
-        f.write(text)
+# ── Public API ────────────────────────────────────────────────────────────────
 
-
-def _print_to_printer(printer_name: str, text: str) -> bool:
-    """
-    Send text to a system printer.
-    Uses python-escpos for thermal printers when available,
-    falls back to system print command on Linux / win32api on Windows.
-    """
+def print_receipt(receipt: dict, parent=None) -> bool:
+    """Print a completed sale receipt."""
     try:
-        # Try python-escpos (thermal)
-        import escpos.printer as ep
-        # This is a basic example — real implementation needs printer detection
-        # p = ep.Usb(0x04b8, 0x0e03)  # Epson TM-T88
-        # p.text(text); p.cut()
-        raise NotImplementedError("Configure printer USB/network IDs in print_manager.py")
-    except (ImportError, NotImplementedError):
-        pass
+        from utils.receipt_formatter import format_sale
+        biz, currency = _get_biz_and_currency()
+        text = format_sale(receipt, biz, currency)
 
-    # Linux lp / lpr fallback
+        _save_text(f"receipt_{_safe_num(receipt['receipt_number'])}_{_stamp()}.txt", text)
+        return _send_to_printer(text, parent)
+
+    except Exception as e:
+        print(f"[PrintManager] print_receipt error: {e}")
+        return False
+
+
+def print_void(receipt: dict, refund: dict,
+               voided_by_user: dict = None, parent=None) -> bool:
+    """Print a void notice for a voided receipt."""
     try:
-        import subprocess
-        tmp = os.path.join(RECEIPT_DIR, "_tmp_print.txt")
-        with open(tmp, "w") as f: f.write(text)
-        result = subprocess.run(["lp", "-d", printer_name, tmp], capture_output=True)
-        return result.returncode == 0
-    except Exception:
-        pass
+        from utils.receipt_formatter import format_void
+        biz, currency = _get_biz_and_currency()
+        voided_by = voided_by_user.get("full_name", "") if voided_by_user else ""
+        reason    = refund.get("reason", "") if refund else ""
+        text = format_void(receipt, biz,
+                           voided_by=voided_by,
+                           reason=reason,
+                           currency=currency)
 
-    # Windows fallback (no deps)
+        _save_text(f"void_{_safe_num(receipt['receipt_number'])}_{_stamp()}.txt", text)
+        return _send_to_printer(text, parent)
+
+    except Exception as e:
+        print(f"[PrintManager] print_void error: {e}")
+        return False
+
+
+def print_refund(receipt: dict, refund: dict,
+                 refunded_by_user: dict = None, parent=None) -> bool:
+    """Print a refund receipt."""
     try:
-        import win32api, win32print
-        tmp = os.path.join(RECEIPT_DIR, "_tmp_print.txt")
-        with open(tmp, "w") as f: f.write(text)
-        win32api.ShellExecute(0, "print", tmp, f'/d:"{printer_name}"', ".", 0)
-        return True
-    except Exception:
-        pass
+        from utils.receipt_formatter import format_refund
+        biz, currency = _get_biz_and_currency()
+        refunded_by  = refunded_by_user.get("full_name", "") if refunded_by_user else ""
+        reason       = refund.get("reason", "") if refund else ""
+        amount       = refund.get("amount", receipt.get("total", 0))
+        refund_type  = refund.get("refund_type", "full") if refund else "full"
+        text = format_refund(receipt, biz,
+                             refund_amount=amount,
+                             refund_type=refund_type,
+                             refunded_by=refunded_by,
+                             reason=reason,
+                             currency=currency)
 
-    return False
+        _save_text(f"refund_{_safe_num(receipt['receipt_number'])}_{_stamp()}.txt", text)
+        return _send_to_printer(text, parent)
+
+    except Exception as e:
+        print(f"[PrintManager] print_refund error: {e}")
+        return False
 
 
-# ── Label printing ────────────────────────────────────────────────────────────
+def print_session(session: dict, parent=None) -> bool:
+    """Print a session summary / Z-report."""
+    try:
+        from utils.receipt_formatter import format_session
+        from core.db_checkout import session_totals
+        from core.db_users import get_user_by_id
+
+        biz, currency = _get_biz_and_currency()
+        totals = session_totals(session["id"])
+
+        cashier = get_user_by_id(session["user_id"])
+        cashier_name = cashier["full_name"] if cashier else "Unknown"
+
+        opened_by, closed_by = "", ""
+        if session.get("opened_by"):
+            u = get_user_by_id(session["opened_by"])
+            opened_by = u["full_name"] if u else ""
+        if session.get("closed_by"):
+            u = get_user_by_id(session["closed_by"])
+            closed_by = u["full_name"] if u else ""
+
+        text = format_session(
+            session, totals, cashier_name, biz,
+            opened_by=opened_by,
+            closed_by=closed_by,
+            currency=currency
+        )
+
+        _save_text(f"session_{session['id']:04d}_{_stamp()}.txt", text)
+        return _send_to_printer(text, parent)
+
+    except Exception as e:
+        print(f"[PrintManager] print_session error: {e}")
+        return False
+
+
+def reprint_receipt(receipt_number: str, parent=None) -> bool:
+    """Reprint any past receipt by receipt number (e.g. '#0041')."""
+    try:
+        from core.db_checkout import get_receipt_by_number
+        receipt = get_receipt_by_number(receipt_number)
+        if not receipt:
+            if parent:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(parent, "Not Found",
+                    f"Receipt {receipt_number} not found.")
+            return False
+        return print_receipt(receipt, parent)
+
+    except Exception as e:
+        print(f"[PrintManager] reprint_receipt error: {e}")
+        return False
+
+
+# ── Label printing (stub — label UI to follow) ────────────────────────────────
 
 def print_label(product: dict, copies: int = 1,
                 printer_name: str = "", parent=None) -> bool:
-    """
-    Print a shelf price label.
-    Stub — label UI will call this when implemented.
-    """
+    """Print a shelf price label. Full implementation with label UI."""
     try:
+        from core.db_config import get as cfg_get
         if not printer_name:
-            from core.db_config import get as cfg_get
             printer_name = cfg_get("label_printer_name", "")
-
-        text = _format_label_text(product)
+        # Label formatting will be handled by the label designer UI
         print(f"[Label] {product['name']} x{copies} → {printer_name or 'no printer'}")
         return True
     except Exception as e:
         print(f"[PrintManager] Label print error: {e}")
         return False
-
-
-def _format_label_text(product: dict) -> str:
-    lines = [
-        product.get("brand", ""),
-        product["name"],
-        f"${product['selling_price']:.2f}",
-        product.get("barcode", ""),
-    ]
-    return "\n".join(l for l in lines if l)

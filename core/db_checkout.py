@@ -285,6 +285,15 @@ def session_totals(session_id: int) -> dict:
         return dict(row)
 
 
+def get_refunds_for_receipt(receipt_id: int) -> list[dict]:
+    """Return all refund/void records for a receipt, newest first."""
+    with _conn() as con:
+        return [dict(r) for r in con.execute(
+            "SELECT * FROM refunds WHERE receipt_id = ? ORDER BY id DESC",
+            (receipt_id,)
+        )]
+
+
 def get_session_receipts(session_id: int) -> list[dict]:
     """Return all receipts for a session."""
     with _conn() as con:

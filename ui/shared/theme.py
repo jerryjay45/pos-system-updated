@@ -46,17 +46,17 @@ THEMES: dict[str, dict] = {
         "ACCENT_LIGHT":    "#FAC775",
         "ACCENT_LIGHTEST": "#FAEEDA",
         "ACCENT_BG":       "#FEF3DC",
-        "DARK":            "#111111",
-        "DARK_2":          "#1E1E1E",
-        "DARK_3":          "#252525",
-        "DARK_4":          "#2A2A2A",
-        "DARK_CARD":       "#2C2C2A",
-        "WARM_WHITE":      "#F8F6F1",
-        "BORDER":          "#E2DDD3",
-        "BORDER_LIGHT":    "#F1EFE8",
-        "MUTED":           "#B4B2A9",
-        "SUBTLE":          "#5F5E5A",
-        "LABEL_TEXT":      "#888780",
+        "DARK":            "#0D0D0D",
+        "DARK_2":          "#1A1A1A",
+        "DARK_3":          "#222222",
+        "DARK_4":          "#2E2E2E",
+        "DARK_CARD":       "#1C1C1A",
+        "WARM_WHITE":      "#FFFFFF",
+        "BORDER":          "#C8C3B8",
+        "BORDER_LIGHT":    "#E2DDD3",
+        "MUTED":           "#6B6860",
+        "SUBTLE":          "#3D3C39",
+        "LABEL_TEXT":      "#4A4845",
     },
 
     # ── Dark blue ─────────────────────────────────────────────────────
@@ -67,17 +67,17 @@ THEMES: dict[str, dict] = {
         "ACCENT_LIGHT":    "#93C5FD",
         "ACCENT_LIGHTEST": "#DBEAFE",
         "ACCENT_BG":       "#EFF6FF",
-        "DARK":            "#0F172A",
-        "DARK_2":          "#1E293B",
-        "DARK_3":          "#273549",
-        "DARK_4":          "#334155",
-        "DARK_CARD":       "#1E293B",
-        "WARM_WHITE":      "#F8FAFC",
-        "BORDER":          "#CBD5E1",
-        "BORDER_LIGHT":    "#E2E8F0",
-        "MUTED":           "#94A3B8",
-        "SUBTLE":          "#64748B",
-        "LABEL_TEXT":      "#64748B",
+        "DARK":            "#0A0F1E",
+        "DARK_2":          "#151D30",
+        "DARK_3":          "#1E2A42",
+        "DARK_4":          "#263550",
+        "DARK_CARD":       "#0F1829",
+        "WARM_WHITE":      "#FFFFFF",
+        "BORDER":          "#94A3B8",
+        "BORDER_LIGHT":    "#CBD5E1",
+        "MUTED":           "#475569",
+        "SUBTLE":          "#334155",
+        "LABEL_TEXT":      "#374151",
     },
 
     # ── Green ─────────────────────────────────────────────────────────
@@ -205,6 +205,7 @@ def get_stylesheet() -> str:
 QWidget {{
     font-family: "{F}", "Segoe UI", sans-serif;
     font-size: 14px;
+    font-weight: 500;
     color: {DC};
     background-color: {WW};
 }}
@@ -212,7 +213,8 @@ QMainWindow, QDialog {{ background-color: {WW}; }}
 
 QPushButton {{
     background-color: {A}; color: white; border: none;
-    border-radius: 8px; padding: 7px 18px; font-size: 13px; font-weight: 600;
+    border-radius: 8px; padding: 7px 18px;
+    font-size: 13px; font-weight: 700;
 }}
 QPushButton:hover   {{ background-color: {AD}; }}
 QPushButton:pressed {{ background-color: {_active.get("ACCENT_DARKER","#633806")}; }}
@@ -220,7 +222,7 @@ QPushButton:disabled {{ background-color: {M}; color: white; }}
 
 QPushButton[flat="true"] {{
     background-color: transparent; color: {_active.get("SUBTLE",M)};
-    border: 1px solid {B};
+    border: 1.5px solid {B}; font-weight: 600;
 }}
 QPushButton[flat="true"]:hover {{
     border-color: {A}; color: {A}; background-color: {AL};
@@ -231,37 +233,37 @@ QPushButton[dark="true"] {{ background-color: {DC}; }}
 QPushButton[dark="true"]:hover {{ background-color: #444441; }}
 
 QLineEdit {{
-    background-color: {W}; border: 1.5px solid {B};
+    background-color: {W}; border: 2px solid {B};
     border-radius: 7px; padding: 5px 12px;
-    font-size: 13px; color: {DC};
+    font-size: 13px; font-weight: 500; color: {DC};
     min-height: 20px;
 }}
-QLineEdit:focus {{ border-color: {A}; }}
+QLineEdit:focus {{ border-color: {A}; border-width: 2px; }}
 
 QComboBox {{
-    background-color: {W}; border: 1.5px solid {B};
+    background-color: {W}; border: 2px solid {B};
     border-radius: 7px; padding: 5px 12px;
-    font-size: 13px; color: {DC};
+    font-size: 13px; font-weight: 500; color: {DC};
     min-height: 20px;
 }}
 QComboBox:focus {{ border-color: {A}; }}
 QComboBox::drop-down {{ border: none; width: 22px; }}
 QComboBox QAbstractItemView {{
-    background-color: {W}; border: 1px solid {B};
+    background-color: {W}; border: 1.5px solid {B};
     selection-background-color: {AL}; selection-color: {DC};
-    font-size: 13px;
+    font-size: 13px; font-weight: 500;
     padding: 2px;
 }}
 
 QTableWidget {{
     background-color: {W}; gridline-color: {BL};
-    border: none; font-size: 13px;
+    border: none; font-size: 13px; font-weight: 500;
 }}
-QTableWidget::item {{ padding: 8px 12px; border-bottom: 1px solid {BL}; }}
+QTableWidget::item {{ padding: 8px 12px; border-bottom: 1px solid {BL}; color: {DC}; }}
 QTableWidget::item:selected {{ background-color: {AB}; color: {DC}; }}
 QHeaderView::section {{
     background-color: {D}; color: {A};
-    font-size: 12px; font-weight: 600;
+    font-size: 12px; font-weight: 700;
     padding: 8px 12px; border: none;
     border-right: 1px solid {D4};
 }}
@@ -275,31 +277,38 @@ QScrollBar::handle:vertical {{
 QScrollBar::handle:vertical:hover {{ background: {M}; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 
-QLabel {{ background: transparent; font-size: 13px; }}
+QLabel {{ background: transparent; font-size: 13px; font-weight: 500; color: {DC}; }}
 
 QTabBar::tab {{
     background: {W}; color: {LT};
     border: none; border-bottom: 2px solid transparent;
-    padding: 11px 18px; font-size: 13px; font-weight: 500;
+    padding: 11px 18px; font-size: 13px; font-weight: 600;
 }}
-QTabBar::tab:selected {{ color: {DC}; border-bottom: 2px solid {A}; }}
+QTabBar::tab:selected {{ color: {DC}; border-bottom: 2px solid {A}; font-weight: 700; }}
 QTabBar::tab:hover {{ color: {DC}; }}
-QTabWidget::pane {{ border: none; border-top: 1px solid {B}; }}
+QTabWidget::pane {{ border: none; border-top: 1.5px solid {B}; }}
 
-QCheckBox {{ font-size: 13px; spacing: 8px; }}
+QCheckBox {{ font-size: 13px; font-weight: 500; spacing: 8px; color: {DC}; }}
 QCheckBox::indicator, QRadioButton::indicator {{
     width: 16px; height: 16px;
-    border: 1.5px solid {B}; border-radius: 4px; background: {W};
+    border: 2px solid {B}; border-radius: 4px; background: {W};
 }}
 QCheckBox::indicator:checked {{
     background-color: {A}; border-color: {A};
 }}
 
+QSpinBox, QDoubleSpinBox {{
+    background-color: {W}; border: 2px solid {B};
+    border-radius: 7px; padding: 5px 12px;
+    font-size: 13px; font-weight: 500; color: {DC};
+}}
+QSpinBox:focus, QDoubleSpinBox:focus {{ border-color: {A}; }}
+
 QFrame#topbar {{ background-color: {D}; border-bottom: 1px solid {D4}; }}
 QFrame#sidebar {{ background-color: {D2}; border-right: 1px solid {D4}; }}
 QFrame#totalsPanel {{ background-color: {D2}; border-left: 1px solid {D4}; }}
 QFrame#bottombar {{ background-color: {D2}; border-top: 1px solid {D4}; }}
-QStatusBar {{ background-color: {D}; color: {M}; font-size: 12px; }}
+QStatusBar {{ background-color: {D}; color: {M}; font-size: 12px; font-weight: 500; }}
 """
 
 

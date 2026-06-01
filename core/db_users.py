@@ -220,6 +220,14 @@ def close_session(session_id: int, total_sales: float,
         return cur.rowcount > 0
 
 
+def get_session_by_id(session_id: int) -> dict | None:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
 def get_sessions(user_id: int = None, status: str = None) -> list[dict]:
     q = """
         SELECT s.*,

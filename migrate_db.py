@@ -28,6 +28,13 @@ con.execute("""
 """)
 print("✓  discount_levels table")
 
+# cost column on price_groups
+try:
+    con.execute("ALTER TABLE price_groups ADD COLUMN cost REAL NOT NULL DEFAULT 0.0")
+    print("✓  price_groups.cost column")
+except Exception:
+    print("~  price_groups.cost already exists")
+
 # profit_margin column on groups
 try:
     con.execute("ALTER TABLE groups ADD COLUMN profit_margin REAL DEFAULT 0.0")

@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS price_groups (
     name          TEXT    NOT NULL UNIQUE,
     type          TEXT    NOT NULL DEFAULT 'alias'
                           CHECK(type IN ('alias','variant')),
+    cost          REAL    NOT NULL DEFAULT 0.0,
     selling_price REAL    NOT NULL DEFAULT 0.0
 );
 
@@ -182,33 +183,47 @@ def add_price_group(name: str, type_: str, selling_price: float = 0.0) -> int:
 
 
 def update_price_group(group_id: int, name: str = None,
+                       cost: float = None,
                        selling_price: float = None) -> list[dict]:
-    """Update a price group and cascade selling price to all member products.
-    Returns list of affected products for confirmation dialog.
-    """
+    """Update a price group record and cascade cost/selling_price to all members."""
     with _conn() as con:
         if name:
             con.execute("UPDATE price_groups SET name = ? WHERE id = ?",
                         (name.strip().upper(), group_id))
+
+        set_clauses, params = [], []
+        if cost is not None:
+            set_clauses.append("cost = ?"); params.append(cost)
         if selling_price is not None:
-            con.execute("UPDATE price_groups SET selling_price = ? WHERE id = ?",
-                        (selling_price, group_id))
+            set_clauses.append("selling_price = ?"); params.append(selling_price)
+
+        affected = []
+        if set_clauses:
+            params.append(group_id)
+            con.execute(
+                f"UPDATE price_groups SET {', '.join(set_clauses)} WHERE id = ?",
+                params
+            )
             # Collect affected products
             affected = [dict(r) for r in con.execute(
-                """SELECT id, name FROM products
-                   WHERE alias_group_id = ? OR variant_group_id = ?""",
+                "SELECT id, name FROM products WHERE alias_group_id = ? OR variant_group_id = ?",
                 (group_id, group_id)
             )]
-            # Cascade price
+            # Build product UPDATE
+            prod_set, prod_params = [], []
+            if cost is not None:
+                prod_set.append("cost = ?"); prod_params.append(cost)
+            if selling_price is not None:
+                prod_set.append("selling_price = ?"); prod_params.append(selling_price)
+            prod_params += [group_id, group_id]
             con.execute(
-                """UPDATE products SET selling_price = ?, updated_at = datetime('now')
-                   WHERE alias_group_id = ? OR variant_group_id = ?""",
-                (selling_price, group_id, group_id)
+                f"""UPDATE products SET {', '.join(prod_set)}, updated_at = datetime('now')
+                    WHERE alias_group_id = ? OR variant_group_id = ?""",
+                prod_params
             )
-            con.commit()
-            return affected
+
         con.commit()
-        return []
+        return affected
 
 
 def delete_price_group(group_id: int):
