@@ -25,6 +25,7 @@ from core.db_products import (
     delete_product, get_groups, add_group,
     get_price_groups, add_price_group, update_price_group,
     count_products, cascade_single_cost_to_cases, recalculate_all_cases,
+    adjust_stock,
 )
 from core.db_users    import get_users, get_sessions, open_session, close_session, get_user_by_id, has_open_session
 from core.db_checkout import (
@@ -116,14 +117,14 @@ class SupervisorWindow(BaseWindow):
         lay = QVBoxLayout(panel)
         lay.setContentsMargins(10, 10, 10, 10); lay.setSpacing(8)
 
-        tb = QHBoxLayout(); tb.setSpacing(8)
+        tb = QHBoxLayout(); tb.setSpacing(6)
         self.product_search = QLineEdit()
         self.product_search.setPlaceholderText("🔍  Search by name, barcode, alias or group…")
         self.product_search.setFixedHeight(34)
         self.product_search.setStyleSheet(self._input_style())
         self.product_search.returnPressed.connect(self._search_products)
 
-        refresh_btn = self._icon_btn("↻", "Refresh")
+        refresh_btn = self._outline_btn("↻  Refresh")
         refresh_btn.clicked.connect(lambda: (setattr(self, '_pg_page', 0), self._load_products(self.product_search.text())))
 
         recalc_btn = QPushButton("⟳ Recalc Cases")
@@ -147,15 +148,18 @@ class SupervisorWindow(BaseWindow):
         lay.addLayout(tb)
 
         self.product_table = QTableWidget()
-        self.product_table.setColumnCount(7)
+        self.product_table.setColumnCount(6)
         self.product_table.setHorizontalHeaderLabels(
-            ["Name","Barcode","Cost","Group","GCT","Type","Actions"])
+            ["Name", "Barcode", "Cost", "Group", "Tags", "Actions"])
         hh = self.product_table.horizontalHeader()
         hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        col_widths = {1: 130, 2: 90, 3: 110, 4: 65, 5: 70, 6: 90}
-        for col, w_ in col_widths.items():
-            hh.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
-            self.product_table.setColumnWidth(col, w_)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.product_table.setColumnWidth(4, 80)
+        hh.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        self.product_table.setColumnWidth(5, 120)
         self.product_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.product_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.product_table.verticalHeader().setVisible(False)
@@ -191,74 +195,109 @@ class SupervisorWindow(BaseWindow):
         return panel
 
     def _build_product_form(self):
-        scroll = QScrollArea(); scroll.setMinimumWidth(280); scroll.setMaximumWidth(360); scroll.setWidgetResizable(True)
+        scroll = QScrollArea(); scroll.setFixedWidth(400); scroll.setWidgetResizable(True)
         scroll.setStyleSheet(f"QScrollArea{{background:{WHITE};border:1px solid {BORDER};border-radius:10px;}}")
         fw = QWidget(); fw.setStyleSheet(f"background:{WHITE};")
-        lay = QVBoxLayout(fw); lay.setContentsMargins(14,14,14,14); lay.setSpacing(10)
+        lay = QVBoxLayout(fw); lay.setContentsMargins(14, 12, 14, 12); lay.setSpacing(6)
 
+        # ── Title ─────────────────────────────────────────────────────
         self.form_title = QLabel("➕  Add Product")
-        self.form_title.setStyleSheet(f"color:{DARK_CARD};font-size:13px;font-weight:700;")
+        self.form_title.setStyleSheet(f"color:{DARK_CARD};font-size:15px;font-weight:700;")
         lay.addWidget(self.form_title)
 
+        def _divider():
+            d = QFrame(); d.setFrameShape(QFrame.Shape.HLine)
+            d.setStyleSheet(f"background:{BORDER};max-height:1px;border:none;")
+            return d
+
+        def _section(title):
+            l = QLabel(title.upper())
+            l.setStyleSheet(f"color:{MUTED};font-size:10px;font-weight:700;letter-spacing:1px;")
+            return l
+
+        # ── Section 1: Identity ───────────────────────────────────────
+        lay.addWidget(_section("Identity"))
         self.f_barcode = self._field("Barcode", "Scan or type barcode")
         self.f_name    = self._field("Name",    "e.g. COCA COLA 330ML")
-        self.f_cost    = self._field("Cost",    "0.00")
-        self.f_cost[1].setValidator(QDoubleValidator(0, 999999, 2))
-        self.f_cost[1].textChanged.connect(self._calc_selling_price)
-        for lbl, inp in [self.f_barcode, self.f_name, self.f_cost]:
+        for lbl, inp in [self.f_barcode, self.f_name]:
             lay.addWidget(lbl); lay.addWidget(inp)
 
-        lay.addWidget(self._flabel("Selling Price"))
+        # ── Section 2: Pricing ────────────────────────────────────────
+        lay.addWidget(_divider())
+        lay.addWidget(_section("Pricing"))
+
+        # Cost + Selling Price side by side
+        price_row = QHBoxLayout(); price_row.setSpacing(8)
+        cost_col  = QVBoxLayout(); cost_col.setSpacing(4)
+        price_col = QVBoxLayout(); price_col.setSpacing(4)
+        self.f_cost = self._field("Cost", "0.00")
+        self.f_cost[1].setValidator(QDoubleValidator(0, 999999, 2))
+        self.f_cost[1].textChanged.connect(self._calc_selling_price)
+        cost_col.addWidget(self.f_cost[0]); cost_col.addWidget(self.f_cost[1])
+        price_col.addWidget(self._flabel("Selling Price"))
         self.f_price = QLineEdit(); self.f_price.setReadOnly(True); self.f_price.setFixedHeight(34)
         self.f_price.setStyleSheet(f"QLineEdit{{background:#0d1a10;color:{GREEN};border:1px solid #1a3a20;border-radius:6px;padding:0 10px;font-size:13px;font-weight:700;}}")
         self.f_price_hint = QLabel(""); self.f_price_hint.setStyleSheet(f"color:{MUTED};font-size:10px;")
-        lay.addWidget(self.f_price); lay.addWidget(self.f_price_hint)
+        price_col.addWidget(self.f_price); price_col.addWidget(self.f_price_hint)
+        price_row.addLayout(cost_col); price_row.addLayout(price_col)
+        lay.addLayout(price_row)
 
         lay.addWidget(self._flabel("Product Group"))
         self.f_group = QComboBox(); self.f_group.setStyleSheet(self._combo_style())
         self.f_group.currentIndexChanged.connect(self._calc_selling_price)
         self._populate_groups(); lay.addWidget(self.f_group)
 
-        lay.addWidget(self._flabel("Alias Group  (price-linked products)"))
+        # Alias + Variant side by side
+        grp_row = QHBoxLayout(); grp_row.setSpacing(8)
+        alias_col   = QVBoxLayout(); alias_col.setSpacing(4)
+        variant_col = QVBoxLayout(); variant_col.setSpacing(4)
+        alias_col.addWidget(self._flabel("Alias Group"))
         from ui.shared.searchable_group_combo import SearchableGroupCombo
         self.f_alias_group = SearchableGroupCombo("alias")
-        lay.addWidget(self.f_alias_group)
-
-        lay.addWidget(self._flabel("Variant Group  (flavor/version siblings)"))
+        alias_col.addWidget(self.f_alias_group)
+        variant_col.addWidget(self._flabel("Variant Group"))
         self.f_variant_group = SearchableGroupCombo("variant")
-        lay.addWidget(self.f_variant_group)
+        variant_col.addWidget(self.f_variant_group)
+        grp_row.addLayout(alias_col); grp_row.addLayout(variant_col)
+        lay.addLayout(grp_row)
 
-        lay.addWidget(self._flabel("Discount Level 1"))
+        # ── Section 3: Discounts ──────────────────────────────────────
+        lay.addWidget(_divider())
+        lay.addWidget(_section("Discounts"))
+        disc_row = QHBoxLayout(); disc_row.setSpacing(8)
+        d1_col = QVBoxLayout(); d1_col.setSpacing(4)
+        d2_col = QVBoxLayout(); d2_col.setSpacing(4)
+        d1_col.addWidget(self._flabel("Discount Level 1"))
         self.f_disc1 = QComboBox(); self.f_disc1.setStyleSheet(self._combo_style())
-        self._populate_discount_levels(self.f_disc1); lay.addWidget(self.f_disc1)
-
-        lay.addWidget(self._flabel("Discount Level 2  (higher qty)"))
+        self._populate_discount_levels(self.f_disc1); d1_col.addWidget(self.f_disc1)
+        d2_col.addWidget(self._flabel("Discount Level 2"))
         self.f_disc2 = QComboBox(); self.f_disc2.setStyleSheet(self._combo_style())
-        self._populate_discount_levels(self.f_disc2); lay.addWidget(self.f_disc2)
+        self._populate_discount_levels(self.f_disc2); d2_col.addWidget(self.f_disc2)
+        disc_row.addLayout(d1_col); disc_row.addLayout(d2_col)
+        lay.addLayout(disc_row)
 
-        div = QFrame(); div.setFrameShape(QFrame.Shape.HLine)
-        div.setStyleSheet(f"background:{BORDER};max-height:1px;border:none;")
-        lay.addWidget(div)
-
+        # ── Section 4: Flags ──────────────────────────────────────────
+        lay.addWidget(_divider())
+        lay.addWidget(_section("Flags"))
+        flags_row = QHBoxLayout(); flags_row.setSpacing(16)
         self.t_gct  = self._toggle("GCT Applicable", True)
         self.t_case = self._toggle("Case Item")
         self.t_case.stateChanged.connect(self._on_case_toggled)
-        lay.addWidget(self.t_gct); lay.addWidget(self.t_case)
+        flags_row.addWidget(self.t_gct); flags_row.addWidget(self.t_case); flags_row.addStretch()
+        lay.addLayout(flags_row)
 
         self.case_box = QFrame(); self.case_box.setVisible(False)
         self.case_box.setStyleSheet(f"background:{AMBER_LIGHTEST};border:1px solid {AMBER};border-radius:6px;")
         cb_lay = QVBoxLayout(self.case_box); cb_lay.setContentsMargins(10,10,10,10); cb_lay.setSpacing(6)
-
         cb_lay.addWidget(self._flabel("Parent Single Product"))
         from ui.shared.searchable_product_combo import SearchableProductCombo
         self.f_case_parent = SearchableProductCombo()
         self.f_case_parent.selectionChanged.connect(lambda pid, name: self._on_case_parent_changed())
         cb_lay.addWidget(self.f_case_parent)
-
         self.f_case_cost_hint = QLabel("")
         self.f_case_cost_hint.setStyleSheet(f"color:{MUTED};font-size:10px;")
         cb_lay.addWidget(self.f_case_cost_hint)
-
+        case_qty_row = QHBoxLayout(); case_qty_row.setSpacing(8)
         cb_lay.addWidget(self._flabel("Units per Case"))
         self.f_case_qty = QSpinBox(); self.f_case_qty.setMinimum(1); self.f_case_qty.setMaximum(9999)
         self.f_case_qty.setStyleSheet(self._input_style())
@@ -266,13 +305,60 @@ class SupervisorWindow(BaseWindow):
         cb_lay.addWidget(self.f_case_qty)
         lay.addWidget(self.case_box)
 
+        # ── Section 5: Stock (edit only) ──────────────────────────────
+        lay.addWidget(_divider())
+        self.stock_section = QFrame()
+        self.stock_section.setVisible(False)
+        self.stock_section.setStyleSheet(f"background:transparent;")
+        sl = QVBoxLayout(self.stock_section); sl.setContentsMargins(0,0,0,0); sl.setSpacing(6)
+        sl.addWidget(_section("Stock Adjustment"))
+
+        self.stock_current_lbl = QLabel("Current stock: —")
+        self.stock_current_lbl.setStyleSheet(f"color:{DARK_CARD};font-size:13px;font-weight:600;")
+        sl.addWidget(self.stock_current_lbl)
+
+        adj_row = QHBoxLayout(); adj_row.setSpacing(8)
+        self.stock_qty = QSpinBox(); self.stock_qty.setMinimum(1); self.stock_qty.setMaximum(99999)
+        self.stock_qty.setValue(1); self.stock_qty.setFixedHeight(34)
+        self.stock_qty.setStyleSheet(self._input_style())
+        self.stock_reason = QComboBox(); self.stock_reason.setFixedHeight(34)
+        self.stock_reason.setStyleSheet(self._combo_style())
+        for r in ["Restock", "Damaged", "Correction", "Other"]:
+            self.stock_reason.addItem(r)
+        adj_row.addWidget(self.stock_qty, stretch=1)
+        adj_row.addWidget(self.stock_reason, stretch=2)
+        sl.addLayout(adj_row)
+
+        stock_btn_row = QHBoxLayout(); stock_btn_row.setSpacing(8)
+        self.stock_add_btn = QPushButton("＋  Add Stock"); self.stock_add_btn.setFixedHeight(32)
+        self.stock_add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stock_add_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{GREEN};border:1.5px solid {GREEN};"
+            f"border-radius:7px;font-size:12px;font-weight:700;}}"
+            f"QPushButton:hover{{background:{GREEN};color:white;}}"
+        )
+        self.stock_add_btn.clicked.connect(self._stock_add)
+        self.stock_remove_btn = QPushButton("−  Remove"); self.stock_remove_btn.setFixedHeight(32)
+        self.stock_remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.stock_remove_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{RED};border:1.5px solid {RED};"
+            f"border-radius:7px;font-size:12px;font-weight:700;}}"
+            f"QPushButton:hover{{background:{RED};color:white;}}"
+        )
+        self.stock_remove_btn.clicked.connect(self._stock_remove)
+        stock_btn_row.addWidget(self.stock_add_btn, stretch=1)
+        stock_btn_row.addWidget(self.stock_remove_btn, stretch=1)
+        sl.addLayout(stock_btn_row)
+        lay.addWidget(self.stock_section)
+
         lay.addStretch()
 
+        # ── Bottom buttons ────────────────────────────────────────────
         btn_row = QHBoxLayout(); btn_row.setSpacing(8)
-        self.cancel_btn = QPushButton("Cancel"); self.cancel_btn.setFixedHeight(34)
-        self.cancel_btn.setStyleSheet(f"QPushButton{{background:{DARK_CARD};color:white;border:none;border-radius:7px;font-size:12px;}}QPushButton:hover{{background:#444;}}")
+        self.cancel_btn = QPushButton("Cancel"); self.cancel_btn.setFixedHeight(36)
+        self.cancel_btn.setStyleSheet(f"QPushButton{{background:{DARK_CARD};color:white;border:none;border-radius:7px;font-size:12px;font-weight:600;}}QPushButton:hover{{background:#444;}}")
         self.cancel_btn.clicked.connect(self._new_product_form)
-        self.save_btn = QPushButton("Save Product"); self.save_btn.setFixedHeight(34)
+        self.save_btn = QPushButton("Save Product"); self.save_btn.setFixedHeight(36)
         self.save_btn.setStyleSheet(self._accent_btn()); self.save_btn.clicked.connect(self._save_product)
         btn_row.addWidget(self.cancel_btn); btn_row.addWidget(self.save_btn, stretch=1)
         lay.addLayout(btn_row)
@@ -300,31 +386,37 @@ class SupervisorWindow(BaseWindow):
         C = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter
         for row, p in enumerate(products):
             self.product_table.insertRow(row)
-            self.product_table.setRowHeight(row, 38)
+            self.product_table.setRowHeight(row, 36)
             def cell(t, color=DARK_CARD, align=None):
                 c = QTableWidgetItem(str(t)); c.setForeground(QColor(color))
                 if align: c.setTextAlignment(align)
                 return c
-            gct_c = AMBER_DARK if p["gct_applicable"] else MUTED
-            typ_c = BLUE if p["is_case"] else LABEL_TEXT
+            tags = []
+            if p["gct_applicable"]: tags.append("GCT")
+            if p["is_case"]:        tags.append("CASE")
+            tags_str   = "  ·  ".join(tags) if tags else "—"
+            tags_color = AMBER_DARK if tags else MUTED
             self.product_table.setItem(row, 0, cell(p["name"]))
             self.product_table.setItem(row, 1, cell(p["barcode"], MUTED))
             self.product_table.setItem(row, 2, cell(f"${p['cost']:.2f}", AMBER_DARK, R))
             self.product_table.setItem(row, 3, cell(p.get("group_name") or "—", LABEL_TEXT, C))
-            self.product_table.setItem(row, 4, cell("GCT" if p["gct_applicable"] else "No GCT", gct_c, C))
-            self.product_table.setItem(row, 5, cell("Case" if p["is_case"] else "Single", typ_c, C))
+            self.product_table.setItem(row, 4, cell(tags_str, tags_color, C))
             act = QWidget(); al = QHBoxLayout(act)
-            al.setContentsMargins(4,2,4,2); al.setSpacing(4)
+            al.setContentsMargins(4, 2, 4, 2); al.setSpacing(4)
             for label, color, cb in [
                 ("Edit", AMBER, lambda _, pid=p["id"]: self._edit_product(pid)),
-                ("Del",  RED,   lambda _, pid=p["id"]: self._delete_product(pid)),
+                ("✕",    RED,   lambda _, pid=p["id"]: self._delete_product(pid)),
             ]:
-                b = QPushButton(label); b.setFixedHeight(26); b.setFixedWidth(36)
+                b = QPushButton(label); b.setFixedHeight(26)
                 b.setCursor(Qt.CursorShape.PointingHandCursor)
-                b.setStyleSheet(f"QPushButton{{background:transparent;color:{color};border:1.5px solid {color};border-radius:5px;font-size:11px;font-weight:700;}}QPushButton:hover{{background:{color};color:white;}}")
+                b.setStyleSheet(
+                    f"QPushButton{{background:transparent;color:{color};border:1px solid {color};"
+                    f"border-radius:5px;font-size:12px;font-weight:600;padding:0 8px;}}"
+                    f"QPushButton:hover{{background:{color};color:white;}}"
+                )
                 b.clicked.connect(cb); al.addWidget(b)
             al.addStretch()
-            self.product_table.setCellWidget(row, 6, act)
+            self.product_table.setCellWidget(row, 5, act)
 
         # Update pagination controls
         self._pg_label.setText(f"Page {self._pg_page + 1} of {pages}  ({total} products)")
@@ -362,6 +454,7 @@ class SupervisorWindow(BaseWindow):
         self.f_disc1.setCurrentIndex(0); self.f_disc2.setCurrentIndex(0)
         self.t_gct.setChecked(True); self.t_case.setChecked(False)
         self.f_price.clear(); self.f_price_hint.clear()
+        self.stock_section.setVisible(False)
         self.f_case_parent.clear_value()
         self.f_case_parent.exclude_id(None)
         self.f_case_cost_hint.setText("")
@@ -398,6 +491,12 @@ class SupervisorWindow(BaseWindow):
                 self.f_group.setCurrentIndex(i); break
         self.f_alias_group.set_value(p.get("alias_group_id"))
         self.f_variant_group.set_value(p.get("variant_group_id"))
+        # Show stock section with current level
+        stock = p.get("stock", 0)
+        self.stock_current_lbl.setText(f"Current stock: {stock} unit{'s' if stock != 1 else ''}")
+        self.stock_qty.setValue(1)
+        self.stock_reason.setCurrentIndex(0)
+        self.stock_section.setVisible(True)
 
     def _save_product(self):
         barcode = self.f_barcode[1].text().strip()
@@ -511,6 +610,26 @@ class SupervisorWindow(BaseWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
         if reply == QMessageBox.StandardButton.Yes:
             delete_product(pid); self._load_products(self.product_search.text())
+
+    def _stock_add(self):
+        if not self._editing_product_id: return
+        qty    = self.stock_qty.value()
+        reason = self.stock_reason.currentText()
+        adjust_stock(self._editing_product_id, qty, reason, self.user["id"])
+        p = get_product_by_id(self._editing_product_id)
+        stock = p["stock"] if p else 0
+        self.stock_current_lbl.setText(f"Current stock: {stock} unit{'s' if stock != 1 else ''}")
+        self.stock_qty.setValue(1)
+
+    def _stock_remove(self):
+        if not self._editing_product_id: return
+        qty    = self.stock_qty.value()
+        reason = self.stock_reason.currentText()
+        adjust_stock(self._editing_product_id, -qty, reason, self.user["id"])
+        p = get_product_by_id(self._editing_product_id)
+        stock = p["stock"] if p else 0
+        self.stock_current_lbl.setText(f"Current stock: {stock} unit{'s' if stock != 1 else ''}")
+        self.stock_qty.setValue(1)
 
     def _calc_selling_price(self):
         try:    cost = float(self.f_cost[1].text() or 0)

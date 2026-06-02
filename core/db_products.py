@@ -69,8 +69,16 @@ CREATE TABLE IF NOT EXISTS products (
     updated_at       TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_products_barcode  ON products(barcode);
-CREATE INDEX IF NOT EXISTS idx_products_name     ON products(name COLLATE NOCASE);
+CREATE TABLE IF NOT EXISTS stock_adjustments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    qty_change  INTEGER NOT NULL,
+    reason      TEXT    NOT NULL DEFAULT 'Restock',
+    adjusted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    adjusted_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_products_barcode  ON products(barcode);CREATE INDEX IF NOT EXISTS idx_products_name     ON products(name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_products_alias_pg ON products(alias_group_id);
 CREATE INDEX IF NOT EXISTS idx_products_var_pg   ON products(variant_group_id);
 """
@@ -532,6 +540,39 @@ def decrement_stock(product_id: int, qty: int):
                 (qty, product_id)
             )
         con.commit()
+
+
+def adjust_stock(product_id: int, qty_change: int,
+                 reason: str = "Restock", adjusted_by: int = None):
+    """Manually adjust stock by qty_change (positive = add, negative = remove).
+    Clamps at 0 for removals. Records in stock_adjustments for audit trail.
+    """
+    with _conn() as con:
+        if qty_change < 0:
+            con.execute(
+                "UPDATE products SET stock = MAX(0, stock + ?) WHERE id = ?",
+                (qty_change, product_id)
+            )
+        else:
+            con.execute(
+                "UPDATE products SET stock = stock + ? WHERE id = ?",
+                (qty_change, product_id)
+            )
+        con.execute(
+            "INSERT INTO stock_adjustments (product_id, qty_change, reason, adjusted_by) "
+            "VALUES (?, ?, ?, ?)",
+            (product_id, qty_change, reason, adjusted_by)
+        )
+        con.commit()
+
+
+def get_stock_adjustments(product_id: int, limit: int = 20) -> list[dict]:
+    with _conn() as con:
+        return [dict(r) for r in con.execute(
+            "SELECT * FROM stock_adjustments WHERE product_id = ? "
+            "ORDER BY adjusted_at DESC LIMIT ?",
+            (product_id, limit)
+        )]
 
 
 def increment_stock(product_id: int, qty: int):
