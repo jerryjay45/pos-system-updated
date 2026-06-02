@@ -106,9 +106,9 @@ class SupervisorWindow(BaseWindow):
     def _build_products_tab(self):
         w = QWidget(); w.setStyleSheet(f"background:{WARM_WHITE};")
         lay = QHBoxLayout(w)
-        lay.setContentsMargins(8, 8, 8, 8); lay.setSpacing(8)
-        lay.addWidget(self._build_product_list(), stretch=1)
-        lay.addWidget(self._build_product_form())
+        lay.setContentsMargins(10, 10, 10, 10); lay.setSpacing(10)
+        lay.addWidget(self._build_product_list(), stretch=3)
+        lay.addWidget(self._build_product_form(), stretch=2)
         return w
 
     def _build_product_list(self):
@@ -120,31 +120,36 @@ class SupervisorWindow(BaseWindow):
         tb = QHBoxLayout(); tb.setSpacing(6)
         self.product_search = QLineEdit()
         self.product_search.setPlaceholderText("🔍  Search by name, barcode, alias or group…")
-        self.product_search.setFixedHeight(34)
+        self.product_search.setFixedHeight(36)
         self.product_search.setStyleSheet(self._input_style())
         self.product_search.returnPressed.connect(self._search_products)
 
         refresh_btn = self._outline_btn("↻  Refresh")
+        refresh_btn.setFixedHeight(36)
         refresh_btn.clicked.connect(lambda: (setattr(self, '_pg_page', 0), self._load_products(self.product_search.text())))
 
         recalc_btn = QPushButton("⟳ Recalc Cases")
-        recalc_btn.setFixedHeight(34)
+        recalc_btn.setFixedHeight(36)
         recalc_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         recalc_btn.setToolTip("Recalculate all case product prices from their linked single products")
         recalc_btn.setStyleSheet(
             f"QPushButton{{background:transparent;color:{AMBER_DARK};border:1.5px solid {AMBER};"
-            f"border-radius:7px;font-size:12px;font-weight:600;padding:0 10px;}}"
+            f"border-radius:7px;font-size:12px;font-weight:600;padding:0 12px;}}"
             f"QPushButton:hover{{background:{AMBER_LIGHTEST};}}"
         )
         recalc_btn.clicked.connect(self._recalculate_cases)
 
-        add_btn = QPushButton("＋  Add Product"); add_btn.setFixedHeight(34)
+        add_btn = QPushButton("＋  Add Product"); add_btn.setFixedHeight(36)
         add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         add_btn.setStyleSheet(self._accent_btn())
         add_btn.clicked.connect(self._new_product_form)
 
         tb.addWidget(self.product_search, stretch=1)
-        tb.addWidget(refresh_btn); tb.addWidget(recalc_btn); tb.addWidget(add_btn)
+        tb.addSpacing(4)
+        tb.addWidget(refresh_btn)
+        tb.addWidget(recalc_btn)
+        tb.addSpacing(4)
+        tb.addWidget(add_btn)
         lay.addLayout(tb)
 
         self.product_table = QTableWidget()
@@ -152,14 +157,15 @@ class SupervisorWindow(BaseWindow):
         self.product_table.setHorizontalHeaderLabels(
             ["Name", "Barcode", "Cost", "Group", "Tags", "Actions"])
         hh = self.product_table.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
-        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
-        self.product_table.setColumnWidth(4, 80)
-        hh.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-        self.product_table.setColumnWidth(5, 120)
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)          # Name — takes remaining space
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents) # Barcode — auto
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)            # Cost
+        self.product_table.setColumnWidth(2, 72)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents) # Group — auto
+        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)            # Tags
+        self.product_table.setColumnWidth(4, 72)
+        hh.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)            # Actions
+        self.product_table.setColumnWidth(5, 110)
         self.product_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.product_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.product_table.verticalHeader().setVisible(False)
@@ -195,15 +201,16 @@ class SupervisorWindow(BaseWindow):
         return panel
 
     def _build_product_form(self):
-        scroll = QScrollArea(); scroll.setFixedWidth(400); scroll.setWidgetResizable(True)
+        scroll = QScrollArea(); scroll.setMinimumWidth(340); scroll.setWidgetResizable(True)
         scroll.setStyleSheet(f"QScrollArea{{background:{WHITE};border:1px solid {BORDER};border-radius:10px;}}")
         fw = QWidget(); fw.setStyleSheet(f"background:{WHITE};")
-        lay = QVBoxLayout(fw); lay.setContentsMargins(14, 12, 14, 12); lay.setSpacing(6)
+        lay = QVBoxLayout(fw); lay.setContentsMargins(16, 14, 16, 14); lay.setSpacing(8)
 
         # ── Title ─────────────────────────────────────────────────────
         self.form_title = QLabel("➕  Add Product")
-        self.form_title.setStyleSheet(f"color:{DARK_CARD};font-size:15px;font-weight:700;")
+        self.form_title.setStyleSheet(f"color:{DARK_CARD};font-size:16px;font-weight:700;padding-bottom:2px;")
         lay.addWidget(self.form_title)
+        lay.addSpacing(2)
 
         def _divider():
             d = QFrame(); d.setFrameShape(QFrame.Shape.HLine)
@@ -223,25 +230,25 @@ class SupervisorWindow(BaseWindow):
             lay.addWidget(lbl); lay.addWidget(inp)
 
         # ── Section 2: Pricing ────────────────────────────────────────
+        lay.addSpacing(4)
         lay.addWidget(_divider())
+        lay.addSpacing(2)
         lay.addWidget(_section("Pricing"))
 
-        # Cost + Selling Price side by side
-        price_row = QHBoxLayout(); price_row.setSpacing(8)
-        cost_col  = QVBoxLayout(); cost_col.setSpacing(4)
-        price_col = QVBoxLayout(); price_col.setSpacing(4)
+        # Cost (full width)
         self.f_cost = self._field("Cost", "0.00")
         self.f_cost[1].setValidator(QDoubleValidator(0, 999999, 2))
         self.f_cost[1].textChanged.connect(self._calc_selling_price)
-        cost_col.addWidget(self.f_cost[0]); cost_col.addWidget(self.f_cost[1])
-        price_col.addWidget(self._flabel("Selling Price"))
-        self.f_price = QLineEdit(); self.f_price.setReadOnly(True); self.f_price.setFixedHeight(34)
-        self.f_price.setStyleSheet(f"QLineEdit{{background:#0d1a10;color:{GREEN};border:1px solid #1a3a20;border-radius:6px;padding:0 10px;font-size:13px;font-weight:700;}}")
-        self.f_price_hint = QLabel(""); self.f_price_hint.setStyleSheet(f"color:{MUTED};font-size:10px;")
-        price_col.addWidget(self.f_price); price_col.addWidget(self.f_price_hint)
-        price_row.addLayout(cost_col); price_row.addLayout(price_col)
-        lay.addLayout(price_row)
+        lay.addWidget(self.f_cost[0]); lay.addWidget(self.f_cost[1])
 
+        # Selling Price (full width, read-only display)
+        lay.addWidget(self._flabel("Selling Price"))
+        self.f_price = QLineEdit(); self.f_price.setReadOnly(True); self.f_price.setFixedHeight(36)
+        self.f_price.setStyleSheet(f"QLineEdit{{background:#0d1a10;color:{GREEN};border:1px solid #1a3a20;border-radius:6px;padding:0 10px;font-size:14px;font-weight:700;}}")
+        self.f_price_hint = QLabel(""); self.f_price_hint.setStyleSheet(f"color:{MUTED};font-size:10px;")
+        lay.addWidget(self.f_price); lay.addWidget(self.f_price_hint)
+
+        lay.addSpacing(2)
         lay.addWidget(self._flabel("Product Group"))
         self.f_group = QComboBox(); self.f_group.setStyleSheet(self._combo_style())
         self.f_group.currentIndexChanged.connect(self._calc_selling_price)
@@ -262,7 +269,9 @@ class SupervisorWindow(BaseWindow):
         lay.addLayout(grp_row)
 
         # ── Section 3: Discounts ──────────────────────────────────────
+        lay.addSpacing(4)
         lay.addWidget(_divider())
+        lay.addSpacing(2)
         lay.addWidget(_section("Discounts"))
         disc_row = QHBoxLayout(); disc_row.setSpacing(8)
         d1_col = QVBoxLayout(); d1_col.setSpacing(4)
@@ -277,7 +286,9 @@ class SupervisorWindow(BaseWindow):
         lay.addLayout(disc_row)
 
         # ── Section 4: Flags ──────────────────────────────────────────
+        lay.addSpacing(4)
         lay.addWidget(_divider())
+        lay.addSpacing(2)
         lay.addWidget(_section("Flags"))
         flags_row = QHBoxLayout(); flags_row.setSpacing(16)
         self.t_gct  = self._toggle("GCT Applicable", True)
@@ -306,6 +317,7 @@ class SupervisorWindow(BaseWindow):
         lay.addWidget(self.case_box)
 
         # ── Section 5: Stock (edit only) ──────────────────────────────
+        lay.addSpacing(4)
         lay.addWidget(_divider())
         self.stock_section = QFrame()
         self.stock_section.setVisible(False)
@@ -354,13 +366,14 @@ class SupervisorWindow(BaseWindow):
         lay.addStretch()
 
         # ── Bottom buttons ────────────────────────────────────────────
+        lay.addSpacing(6)
         btn_row = QHBoxLayout(); btn_row.setSpacing(8)
-        self.cancel_btn = QPushButton("Cancel"); self.cancel_btn.setFixedHeight(36)
-        self.cancel_btn.setStyleSheet(f"QPushButton{{background:{DARK_CARD};color:white;border:none;border-radius:7px;font-size:12px;font-weight:600;}}QPushButton:hover{{background:#444;}}")
+        self.cancel_btn = QPushButton("Cancel"); self.cancel_btn.setFixedHeight(40)
+        self.cancel_btn.setStyleSheet(f"QPushButton{{background:{DARK_CARD};color:white;border:none;border-radius:8px;font-size:13px;font-weight:600;}}QPushButton:hover{{background:#444;}}")
         self.cancel_btn.clicked.connect(self._new_product_form)
-        self.save_btn = QPushButton("Save Product"); self.save_btn.setFixedHeight(36)
+        self.save_btn = QPushButton("Save Product"); self.save_btn.setFixedHeight(40)
         self.save_btn.setStyleSheet(self._accent_btn()); self.save_btn.clicked.connect(self._save_product)
-        btn_row.addWidget(self.cancel_btn); btn_row.addWidget(self.save_btn, stretch=1)
+        btn_row.addWidget(self.cancel_btn, stretch=1); btn_row.addWidget(self.save_btn, stretch=2)
         lay.addLayout(btn_row)
 
         scroll.setWidget(fw)
