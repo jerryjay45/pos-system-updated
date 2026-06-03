@@ -1028,106 +1028,15 @@ class CashierWindow(BaseWindow):
     # ================================================================
 
     def _price_check(self):
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Price Check")
-        dlg.setFixedWidth(360)
-        dlg.setStyleSheet(f"background:{WHITE};")
-        lay = QVBoxLayout(dlg)
-        lay.setContentsMargins(20, 16, 20, 16)
-        lay.setSpacing(10)
-
-        # Header
-        title = QLabel("▦  Price Check")
-        title.setStyleSheet(f"color:{DARK_CARD};font-size:14px;font-weight:700;")
-        lay.addWidget(title)
-
-        # Search input
-        hint = QLabel("Scan barcode or enter product name")
-        hint.setStyleSheet(f"color:{MUTED};font-size:11px;")
-        lay.addWidget(hint)
-
-        inp = QLineEdit()
-        inp.setPlaceholderText("Barcode or name…")
-        inp.setFixedHeight(38)
-        inp.setStyleSheet(f"""
-            QLineEdit{{background:{WARM_WHITE};color:{DARK_CARD};
-            border:1.5px solid {BORDER};border-radius:8px;
-            padding:0 12px;font-size:13px;}}
-            QLineEdit:focus{{border-color:{AMBER};}}
-        """)
-        lay.addWidget(inp)
-
-        # Result frame
-        result_frame = QFrame()
-        result_frame.setVisible(False)
-        result_frame.setStyleSheet(
-            f"background:{WARM_WHITE};border:1px solid {BORDER};border-radius:8px;"
-        )
-        rl = QVBoxLayout(result_frame)
-        rl.setContentsMargins(14, 10, 14, 10)
-        rl.setSpacing(4)
-        result_name  = QLabel("")
-        result_name.setStyleSheet(f"color:{DARK_CARD};font-size:13px;font-weight:700;")
-        result_name.setWordWrap(True)
-        result_price = QLabel("")
-        result_price.setStyleSheet(f"color:{AMBER};font-size:22px;font-weight:800;")
-        result_gct   = QLabel("")
-        result_gct.setStyleSheet(f"color:{MUTED};font-size:11px;")
-        result_not_found = QLabel("Product not found")
-        result_not_found.setStyleSheet(f"color:{RED};font-size:12px;font-weight:600;")
-        result_not_found.setVisible(False)
-        rl.addWidget(result_name)
-        rl.addWidget(result_price)
-        rl.addWidget(result_gct)
-        rl.addWidget(result_not_found)
-        lay.addWidget(result_frame)
-
-        # Divider
-        div = QFrame(); div.setFrameShape(QFrame.Shape.HLine)
-        div.setStyleSheet(f"background:{BORDER};max-height:1px;border:none;")
-        lay.addWidget(div)
-
-        # Close button
-        close_btn = QPushButton("Close")
-        close_btn.setFixedHeight(36)
-        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_btn.setStyleSheet(
-            f"QPushButton{{background:{DARK_CARD};color:white;border:none;"
-            f"border-radius:8px;font-size:12px;font-weight:600;}}"
-            f"QPushButton:hover{{background:#444;}}"
-        )
-        close_btn.clicked.connect(dlg.accept)
-        lay.addWidget(close_btn)
-
-        def _do_lookup():
-            text = self._clean_barcode(inp.text().strip())
-            if not text: return
-            p = get_product_by_barcode(text)
-            if not p:
-                results = get_products(search=text, limit=1)
-                p = results[0] if results else None
-            result_frame.setVisible(True)
-            if p:
-                gct_amt = p["selling_price"] * self._gct_rate if p["gct_applicable"] else 0
-                result_name.setText(p["name"])
-                result_price.setText(f"${p['selling_price']:.2f}")
-                result_gct.setText(
-                    f"Incl. GCT: ${gct_amt:.2f}" if p["gct_applicable"] else "No GCT"
-                )
-                result_name.setVisible(True)
-                result_price.setVisible(True)
-                result_gct.setVisible(True)
-                result_not_found.setVisible(False)
-            else:
-                result_name.setVisible(False)
-                result_price.setVisible(False)
-                result_gct.setVisible(False)
-                result_not_found.setVisible(True)
-
-        inp.returnPressed.connect(_do_lookup)
-        dlg.exec()
-        self.search_input.setFocus()
+        """Open the new standalone price check dialog."""
+        from ui.cashier.price_check_dialog import PriceCheckDialog
+        dlg = PriceCheckDialog(parent=self)
+        dlg._gct_rate = self._gct_rate
+        if dlg.exec():
+            product = dlg.get_selected_product()
+            if product:
+                self._add_to_cart(product, qty=1)
+                self.search_input.setFocus()
 
     # ================================================================
     # LOGOUT
