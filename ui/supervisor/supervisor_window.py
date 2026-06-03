@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QLineEdit, QComboBox, QCheckBox, QAbstractItemView,
-    QMessageBox, QScrollArea, QSplitter, QSpinBox,
+    QMessageBox, QScrollArea, QSplitter, QSpinBox, QDialog, QRadioButton,
 )
 from PyQt6.QtCore  import Qt, QTimer, QDateTime, pyqtSignal
 from PyQt6.QtGui   import QColor, QDoubleValidator
@@ -806,8 +806,8 @@ class SupervisorWindow(BaseWindow):
         self.rpt_session_header = QLabel("Select a cashier")
         self.rpt_session_header.setStyleSheet(f"color:{LABEL_TEXT};font-size:12px;font-weight:600;")
         self.rpt_search_bar = QLineEdit()
-        self.rpt_search_bar.setPlaceholderText("🔍  Date or session #…")
-        self.rpt_search_bar.setFixedHeight(30); self.rpt_search_bar.setFixedWidth(180)
+        self.rpt_search_bar.setPlaceholderText("🔍  #0012  or  2024-06-01  or  2024-06-01 to 2024-06-30")
+        self.rpt_search_bar.setFixedHeight(30); self.rpt_search_bar.setFixedWidth(300)
         self.rpt_search_bar.setStyleSheet(self._input_style())
         self.rpt_search_bar.textChanged.connect(self._rpt_filter_sessions)
         self.rpt_refresh_btn = self._outline_btn("↻  Refresh"); self.rpt_refresh_btn.clicked.connect(self._rpt_refresh)
@@ -839,7 +839,8 @@ class SupervisorWindow(BaseWindow):
         return w
 
     def _rpt_load_cashiers(self):
-        self._rpt_all_cashiers = get_users(role="cashier")
+        from core.db_users import get_users
+        self._rpt_all_cashiers = get_users()   # all roles
         self._rpt_fill_cashier_list(self._rpt_all_cashiers)
 
     def _rpt_fill_cashier_list(self, cashiers):
@@ -868,21 +869,17 @@ class SupervisorWindow(BaseWindow):
         # Enrich each session with live totals from receipts DB
         for s in sessions:
             st = session_totals(s["id"])
-            s["_sales"]   = st.get("total_sales", 0) or 0
-            s["_gct"]     = st.get("total_gct", 0) or 0
-            s["_txns"]    = st.get("transaction_count", 0) or 0
-            s["_disc"]    = st.get("total_discount", 0) or 0
+            s["_sales"] = st.get("total_sales", 0) or 0
+            s["_gct"]   = st.get("total_gct", 0) or 0
+            s["_txns"]  = st.get("transaction_count", 0) or 0
+            s["_disc"]  = st.get("total_discount", 0) or 0
         self._rpt_all_sessions = sessions
         self._rpt_fill_session_list(sessions)
-        # Summary cards — totals across ALL sessions for this cashier
-        total_sales  = sum(s["_sales"] for s in sessions)
-        total_gct    = sum(s["_gct"]   for s in sessions)
-        total_txns   = sum(s["_txns"]  for s in sessions)
-        total_disc   = sum(s["_disc"]  for s in sessions)
-        self.rpt_cards["total_sales"].setText(f"${total_sales:.2f}")
-        self.rpt_cards["total_gct"].setText(f"${total_gct:.2f}")
-        self.rpt_cards["transactions"].setText(str(total_txns))
-        self.rpt_cards["discounts"].setText(f"${total_disc:.2f}")
+        self._rpt_clear_cards()
+
+    def _rpt_clear_cards(self):
+        for key in self.rpt_cards:
+            self.rpt_cards[key].setText("—")
 
     def _rpt_fill_session_list(self, sessions):
         self.rpt_session_list.setRowCount(0)
@@ -906,8 +903,34 @@ class SupervisorWindow(BaseWindow):
                 self.rpt_session_list.setItem(i, col, it)
 
     def _rpt_filter_sessions(self, text):
-        f = [s for s in self._rpt_all_sessions if text.lower() in str(s["id"]) or text in str(s.get("opened_at",""))] if text else self._rpt_all_sessions
-        self._rpt_fill_session_list(f)
+        text = text.strip()
+        if not text:
+            self._rpt_fill_session_list(self._rpt_all_sessions)
+            self._rpt_clear_cards()
+            return
+
+        # Date range: "2024-06-01 to 2024-06-30"
+        if " to " in text.lower():
+            parts = text.lower().split(" to ")
+            date_from = parts[0].strip()
+            date_to   = parts[1].strip() if len(parts) > 1 else ""
+            filtered = [
+                s for s in self._rpt_all_sessions
+                if str(s.get("opened_at", ""))[:10] >= date_from
+                and (not date_to or str(s.get("opened_at", ""))[:10] <= date_to)
+            ]
+        # Session number: "#0012" or "12"
+        elif text.startswith("#") or text.isdigit():
+            num = text.lstrip("#")
+            filtered = [s for s in self._rpt_all_sessions
+                        if num in f"{s['id']:04d}"]
+        # Single date or partial date: "2024-06"
+        else:
+            filtered = [s for s in self._rpt_all_sessions
+                        if text in str(s.get("opened_at", ""))]
+
+        self._rpt_fill_session_list(filtered)
+        self._rpt_clear_cards()
 
     def _rpt_on_session_selected(self):
         row = self.rpt_session_list.currentRow()
@@ -916,8 +939,16 @@ class SupervisorWindow(BaseWindow):
         if not item: return
         self._rpt_selected_session_id = item.data(Qt.ItemDataRole.UserRole)
         stat = self.rpt_session_list.item(row, 1)
-        self.rpt_close_btn.setEnabled(bool(stat and stat.text().lower()=="open"))
+        self.rpt_close_btn.setEnabled(bool(stat and stat.text().lower() == "open"))
         self.rpt_print_btn.setEnabled(True)
+        # Update summary cards for the selected session
+        session = next((s for s in self._rpt_all_sessions
+                        if s["id"] == self._rpt_selected_session_id), None)
+        if session:
+            self.rpt_cards["total_sales"].setText(f"${session['_sales']:.2f}")
+            self.rpt_cards["total_gct"].setText(f"${session['_gct']:.2f}")
+            self.rpt_cards["transactions"].setText(str(session["_txns"]))
+            self.rpt_cards["discounts"].setText(f"${session['_disc']:.2f}")
 
     def _rpt_refresh(self):
         if self._rpt_selected_cashier_id: self._rpt_load_sessions(self._rpt_selected_cashier_id)
@@ -963,8 +994,82 @@ class SupervisorWindow(BaseWindow):
         from core.db_users import get_session_by_id
         session = get_session_by_id(self._rpt_selected_session_id)
         if not session: return
+
+        # ── Print options dialog ──────────────────────────────────────
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Print Session Report")
+        dlg.setMinimumWidth(460)
+        dlg.setStyleSheet(f"background:{WHITE};")
+        dl = QVBoxLayout(dlg); dl.setContentsMargins(20, 16, 20, 16); dl.setSpacing(12)
+
+        title = QLabel("Print Options")
+        title.setStyleSheet(f"color:{DARK_CARD};font-size:14px;font-weight:700;")
+        dl.addWidget(title)
+
+        # Report type
+        type_lbl = QLabel("Report Type")
+        type_lbl.setStyleSheet(f"color:{MUTED};font-size:10px;font-weight:700;letter-spacing:1px;")
+        dl.addWidget(type_lbl)
+
+        from PyQt6.QtWidgets import QButtonGroup
+        full_rb    = QRadioButton("Full Z-Report  (all items, group totals, GCT, discounts, voids)")
+        summary_rb = QRadioButton("Summary Only  (totals, group totals, GCT, discounts, voids)")
+        full_rb.setChecked(True)
+        btn_group = QButtonGroup(dlg)
+        btn_group.addButton(full_rb)
+        btn_group.addButton(summary_rb)
+        rb_style = (
+            f"QRadioButton{{color:{DARK_CARD};font-size:12px;spacing:8px;}}"
+            f"QRadioButton::indicator{{width:16px;height:16px;border-radius:8px;"
+            f"border:2px solid {BORDER};background:white;}}"
+            f"QRadioButton::indicator:checked{{border:2px solid {AMBER};"
+            f"background:{AMBER};}}"
+            f"QRadioButton::indicator:hover{{border:2px solid {AMBER};}}"
+        )
+        for rb in (full_rb, summary_rb):
+            rb.setStyleSheet(rb_style)
+            rb.setMinimumWidth(420)
+        dl.addWidget(full_rb)
+        dl.addWidget(summary_rb)
+
+        # Copies
+        copies_row = QHBoxLayout()
+        copies_lbl = QLabel("Copies:")
+        copies_lbl.setStyleSheet(f"color:{DARK_CARD};font-size:12px;")
+        copies_spin = QSpinBox(); copies_spin.setMinimum(1); copies_spin.setMaximum(5)
+        copies_spin.setValue(1); copies_spin.setFixedHeight(30); copies_spin.setFixedWidth(60)
+        copies_spin.setStyleSheet(self._input_style())
+        copies_row.addWidget(copies_lbl); copies_row.addWidget(copies_spin); copies_row.addStretch()
+        dl.addLayout(copies_row)
+
+        # Divider
+        div = QFrame(); div.setFrameShape(QFrame.Shape.HLine)
+        div.setStyleSheet(f"background:{BORDER};max-height:1px;border:none;")
+        dl.addWidget(div)
+
+        # Buttons
+        btn_row = QHBoxLayout(); btn_row.setSpacing(8)
+        cancel_btn = QPushButton("Cancel"); cancel_btn.setFixedHeight(34)
+        cancel_btn.setStyleSheet(
+            f"QPushButton{{background:{DARK_CARD};color:white;border:none;"
+            f"border-radius:7px;font-size:12px;padding:0 14px;}}"
+            f"QPushButton:hover{{background:#444;}}"
+        )
+        cancel_btn.clicked.connect(dlg.reject)
+        print_btn = QPushButton("🖨  Print"); print_btn.setFixedHeight(34)
+        print_btn.setStyleSheet(self._accent_btn())
+        print_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(cancel_btn); btn_row.addWidget(print_btn, stretch=1)
+        dl.addLayout(btn_row)
+
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        report_type = "full" if full_rb.isChecked() else "summary"
+        copies      = copies_spin.value()
+
         from utils.print_manager import print_session
-        print_session(session, parent=self)
+        print_session(session, report_type=report_type, copies=copies, parent=self)
 
     # ================================================================
     # TRANSACTIONS TAB

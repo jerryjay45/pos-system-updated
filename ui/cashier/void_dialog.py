@@ -1,14 +1,15 @@
 """
 ui/cashier/void_dialog.py
-Supervisor-authorised void dialog.
+Supervisor-authorised item removal dialog.
 
-Used for two cases:
-  1. Remove single item (✕ button) — one item pre-checked
-  2. Void cart (Void button)        — all items pre-checked
+Used for three cases:
+  1. Remove single item (✕ button)    — one item pre-checked
+  2. Remove Items button               — all items pre-checked
+  3. Clear Cart button                 — all items pre-checked
 
 Supervisor or manager must enter their password to authorise.
-On accept: returns list of voided items + authorising user info.
-Saves a void log record to checkout DB.
+On accept: returns list of removed items + authorising user info.
+No transaction record is created.
 """
 
 from PyQt6.QtWidgets import (
@@ -31,7 +32,7 @@ from core.db_users import get_users, authenticate
 
 class VoidDialog(QDialog):
     """
-    Supervisor-authorised void dialog.
+    Supervisor-authorised item removal dialog.
 
     Parameters
     ----------
@@ -51,7 +52,7 @@ class VoidDialog(QDialog):
         self.authorised_by = None     # full_name of authoriser
         self.authorised_id = None     # user id of authoriser
 
-        title = "Remove Item" if mode == "remove" else "Void Cart"
+        title = "Remove Item" if mode == "remove" else "Remove Items"
         self.setWindowTitle(title)
         self.setModal(True)
         self.setMinimumWidth(480)
@@ -85,9 +86,9 @@ class VoidDialog(QDialog):
         sub_frame.setStyleSheet(f"background:{RED_LIGHT};border-bottom:1px solid {RED_BORDER};")
         sl = QHBoxLayout(sub_frame); sl.setContentsMargins(18, 10, 18, 10)
         sub = QLabel(
-            "Select items to remove. A supervisor or manager must authorise."
+            "Select the item to remove. A supervisor or manager must authorise."
             if self.mode == "remove" else
-            "Select items to void. A supervisor or manager must authorise."
+            "Select items to remove. A supervisor or manager must authorise."
         )
         sub.setWordWrap(True)
         sub.setStyleSheet(f"color:{RED};font-size:12px;background:transparent;")
@@ -182,7 +183,7 @@ class VoidDialog(QDialog):
         cancel.clicked.connect(self.reject)
 
         self.confirm_btn = QPushButton(
-            "⊘  Authorise Remove" if self.mode == "remove" else "⊘  Authorise Void"
+            "⊘  Authorise Remove"
         )
         self.confirm_btn.setFixedHeight(40)
         self.confirm_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -284,7 +285,7 @@ class VoidDialog(QDialog):
         if hasattr(self, "_void_total_lbl"):
             if count:
                 self._void_total_lbl.setText(
-                    f"Voiding {count} item{'s' if count != 1 else ''}  —  ${total:.2f}"
+                    f"Removing {count} item{'s' if count != 1 else ''}  —  ${total:.2f}"
                 )
             else:
                 self._void_total_lbl.setText("No items selected")

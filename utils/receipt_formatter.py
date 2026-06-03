@@ -232,19 +232,23 @@ def format_refund(receipt: dict, biz: dict,
 
 def format_session(session: dict, totals: dict, cashier_name: str,
                    biz: dict, opened_by: str = "",
-                   closed_by: str = "", currency: str = "$") -> str:
+                   closed_by: str = "", currency: str = "$",
+                   report_type: str = "full",
+                   group_totals: list = None,
+                   voided_receipts: list = None,
+                   all_receipts: list = None) -> str:
     """
     Format a session summary / Z-report.
 
-    session      — session row dict (id, opened_at, closed_at, status).
-    totals       — dict from session_totals() in db_checkout.
-    cashier_name — full name of the cashier for this session.
-    opened_by    — name of supervisor who opened (optional).
-    closed_by    — name of supervisor who closed (optional).
+    report_type — 'full' (all line items + totals) or 'summary' (totals only)
+    group_totals    — list of {group_name, total_sales, item_count}
+    voided_receipts — list of voided receipt dicts
+    all_receipts    — list of all receipts (used for full report line items)
     """
     lines = _header(biz)
 
-    lines.append(_center("SESSION SUMMARY"))
+    title = "FULL Z-REPORT" if report_type == "full" else "SESSION SUMMARY"
+    lines.append(_center(title))
     lines.append(_div())
     lines.append(_right("Session #:", f"{session['id']:04d}"))
     lines.append(_right("Cashier:",   cashier_name))
@@ -258,7 +262,7 @@ def format_session(session: dict, totals: dict, cashier_name: str,
     lines.append(_right("Status:", session["status"].capitalize()))
     lines.append(_div())
 
-    # Transaction counts
+    # ── Transaction counts ─────────────────────────────────────────────
     lines.append(_center("TRANSACTIONS"))
     lines.append(_div("-"))
     txn   = totals.get("transaction_count", 0)
@@ -271,23 +275,63 @@ def format_session(session: dict, totals: dict, cashier_name: str,
     lines.append(_right("Total:",     str(txn)))
     lines.append(_div())
 
-    # Sales totals
+    # ── Full report: line items per receipt ────────────────────────────
+    if report_type == "full" and all_receipts:
+        lines.append(_center("LINE ITEMS"))
+        lines.append(_div("-"))
+        for receipt in all_receipts:
+            if receipt.get("status") != "completed":
+                continue
+            lines.append(f"  {receipt['receipt_number']}  {_ts(receipt['created_at'])}")
+            for item in receipt.get("items", []):
+                name  = item["product_name"][:24]
+                qty   = str(item["quantity"])
+                total = _cur(item["line_total"], currency)
+                lines.append(f"    {name:<24} {qty:>3}x {total:>7}")
+            lines.append(f"  {'Receipt Total:':<28}{_cur(receipt['total'], currency):>8}")
+            lines.append("")
+        lines.append(_div())
+
+    # ── Sales totals ───────────────────────────────────────────────────
     lines.append(_center("SALES TOTALS"))
     lines.append(_div("-"))
     sales    = totals.get("total_sales", 0) or 0
     gct      = totals.get("total_gct", 0) or 0
     discount = totals.get("total_discount", 0) or 0
-    net      = sales - gct
-    lines.append(_right("Gross Sales:",   _cur(sales, currency)))
-    lines.append(_right("Less GCT:",      f"-{_cur(gct, currency)}"))
-    lines.append(_right("Net Sales:",     _cur(net, currency)))
+    subtotal = sales - gct
+    lines.append(_right("Subtotal (ex-GCT):", _cur(subtotal, currency)))
+    lines.append(_right("GCT Collected:",     _cur(gct, currency)))
     if discount > 0:
-        lines.append(_right("Discounts Given:", _cur(discount, currency)))
+        lines.append(_right("Discounts Given:", f"-{_cur(discount, currency)}"))
+    lines.append(_div("-"))
+    lines.append(_right("GROSS SALES:", _cur(sales, currency)))
     lines.append(_div())
-    lines.append(_right("GCT COLLECTED:", _cur(gct, currency)))
-    lines.append(_div())
+
+    # ── Product group totals ───────────────────────────────────────────
+    if group_totals:
+        lines.append(_center("SALES BY GROUP"))
+        lines.append(_div("-"))
+        for g in group_totals:
+            label = f"{g['group_name']} ({g['item_count']} items)"
+            lines.append(_right(label, _cur(g["total_sales"], currency)))
+        lines.append(_div())
+
+    # ── Voided transactions ────────────────────────────────────────────
+    if voided_receipts:
+        lines.append(_center("VOIDED TRANSACTIONS"))
+        lines.append(_div("-"))
+        for v in voided_receipts:
+            lines.append(_right(
+                f"  {v['receipt_number']}  {_ts(v['created_at'])}",
+                _cur(v["total"], currency)
+            ))
+            if v.get("reason"):
+                lines.append(f"    Reason: {v['reason'][:30]}")
+        lines.append(_div())
+    elif void > 0:
+        lines.append(_center(f"({void} voided transaction{'s' if void != 1 else ''} — no details)"))
+        lines.append(_div())
 
     lines.append(_center(f"Printed: {_ts(datetime.now().isoformat())}"))
-
     lines += _footer(biz)
     return "\n".join(lines)

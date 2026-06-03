@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (  # cashier_window
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QFrame, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QListWidget, QListWidgetItem,
-    QSpinBox, QMessageBox,
+    QSpinBox, QMessageBox, QDialog,
 )
 from PyQt6.QtCore import Qt, QTimer, QDateTime
 from PyQt6.QtGui  import QColor, QKeySequence
@@ -310,17 +310,17 @@ class CashierWindow(BaseWindow):
         bot_lay.addWidget(clear_btn)
         bot_lay.addWidget(misc_btn)
 
-        void_btn = QPushButton("⊘  Void")
-        void_btn.setFixedHeight(30)
-        void_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        void_btn.setStyleSheet(f"""
+        remove_btn = QPushButton("⊘  Remove Items")
+        remove_btn.setFixedHeight(30)
+        remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        remove_btn.setStyleSheet(f"""
             QPushButton{{background:{DARK_4};color:#ef4444;
             border:1px solid #7a1e1e;border-radius:15px;
             font-size:11px;font-weight:600;padding:0 14px;}}
             QPushButton:hover{{background:#7a1e1e;color:white;}}
         """)
-        void_btn.clicked.connect(self._handle_void)
-        bot_lay.addWidget(void_btn)
+        remove_btn.clicked.connect(self._handle_void)
+        bot_lay.addWidget(remove_btn)
         bot_lay.addWidget(price_btn)
         bot_lay.addStretch()
         lay.addWidget(bot)
@@ -730,7 +730,7 @@ class CashierWindow(BaseWindow):
         item["total"]            = round((price - disc_per_unit + gct_unit) * qty, 2)
 
     def _handle_remove(self, row: int):
-        """Remove item — requires auth if require_remove_auth setting is on."""
+        """Remove a single cart item — respects require_remove_auth setting."""
         if not (0 <= row < len(self.cart)): return
         if get_bool("require_remove_auth", False):
             from ui.cashier.void_dialog import VoidDialog
@@ -770,15 +770,21 @@ class CashierWindow(BaseWindow):
 
     def _remove_from_cart(self, row: int):
         if 0 <= row < len(self.cart):
-            self.cart.pop(row); self._refresh_table(); self._update_totals()
-
-        if 0 <= row < len(self.cart):
             self.cart.pop(row)
             self._refresh_table(); self._update_totals()
 
     def _clear_cart(self):
-        self.carts[self.active_cart] = []
-        self._refresh_table(); self._update_totals()
+        if not self.cart: return
+        if get_bool("require_remove_auth", False):
+            from ui.cashier.void_dialog import VoidDialog
+            dlg = VoidDialog(self.cart, pre_select=list(range(len(self.cart))),
+                             mode="void", parent=self)
+            if dlg.exec():
+                self.carts[self.active_cart] = []
+                self._refresh_table(); self._update_totals()
+        else:
+            self.carts[self.active_cart] = []
+            self._refresh_table(); self._update_totals()
 
     # ── Cart navigation ───────────────────────────────────────────────
 
@@ -903,21 +909,19 @@ class CashierWindow(BaseWindow):
                 self._refresh_table(); self._update_totals()
 
     def _handle_void(self):
-        """Void button — always requires supervisor auth."""
+        """Remove Items button — respects require_remove_auth setting."""
         if not self.cart: return
-        from ui.cashier.void_dialog import VoidDialog
-        dlg = VoidDialog(self.cart, pre_select=list(range(len(self.cart))),
-                         mode="void", parent=self)
-        if dlg.exec():
-            for it in dlg.voided_items:
-                if it in self.cart: self.cart.remove(it)
+        if get_bool("require_remove_auth", False):
+            from ui.cashier.void_dialog import VoidDialog
+            dlg = VoidDialog(self.cart, pre_select=list(range(len(self.cart))),
+                             mode="void", parent=self)
+            if dlg.exec():
+                for it in dlg.voided_items:
+                    if it in self.cart: self.cart.remove(it)
+                self._refresh_table(); self._update_totals()
+        else:
+            self.carts[self.active_cart] = []
             self._refresh_table(); self._update_totals()
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.information(
-                self, "Void Authorised",
-                f"Authorised by: {dlg.authorised_by}\n"
-                f"Items removed: {len(dlg.voided_items)}"
-            )
 
     def _handle_checkout(self):
         if not self.cart: return
@@ -934,7 +938,8 @@ class CashierWindow(BaseWindow):
             if hasattr(dlg, "last_txn_id") and dlg.last_txn_id:
                 self._last_txn_id = dlg.last_txn_id
                 self._reprint_btn.setVisible(True)
-            self._clear_cart()
+            self.carts[self.active_cart] = []
+            self._refresh_table(); self._update_totals()
             self.search_input.setFocus()
             # Auto-logout if supervisor closed the session during this sale
             if self._session_closing:
@@ -1023,18 +1028,106 @@ class CashierWindow(BaseWindow):
     # ================================================================
 
     def _price_check(self):
-        from PyQt6.QtWidgets import QInputDialog
-        barcode, ok = QInputDialog.getText(self, "Price Check", "Scan or enter barcode:")
-        if not ok or not barcode.strip(): return
-        p = get_product_by_barcode(barcode.strip())
-        if p:
-            gct_str = f"\nGCT: ${p['selling_price'] * self._gct_rate:.2f}" if p["gct_applicable"] else "\nNo GCT"
-            QMessageBox.information(
-                self, "Price Check",
-                f"{p['name']}\nPrice: ${p['selling_price']:.2f}{gct_str}"
-            )
-        else:
-            QMessageBox.warning(self, "Price Check", "Product not found.")
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Price Check")
+        dlg.setFixedWidth(360)
+        dlg.setStyleSheet(f"background:{WHITE};")
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(20, 16, 20, 16)
+        lay.setSpacing(10)
+
+        # Header
+        title = QLabel("▦  Price Check")
+        title.setStyleSheet(f"color:{DARK_CARD};font-size:14px;font-weight:700;")
+        lay.addWidget(title)
+
+        # Search input
+        hint = QLabel("Scan barcode or enter product name")
+        hint.setStyleSheet(f"color:{MUTED};font-size:11px;")
+        lay.addWidget(hint)
+
+        inp = QLineEdit()
+        inp.setPlaceholderText("Barcode or name…")
+        inp.setFixedHeight(38)
+        inp.setStyleSheet(f"""
+            QLineEdit{{background:{WARM_WHITE};color:{DARK_CARD};
+            border:1.5px solid {BORDER};border-radius:8px;
+            padding:0 12px;font-size:13px;}}
+            QLineEdit:focus{{border-color:{AMBER};}}
+        """)
+        lay.addWidget(inp)
+
+        # Result frame
+        result_frame = QFrame()
+        result_frame.setVisible(False)
+        result_frame.setStyleSheet(
+            f"background:{WARM_WHITE};border:1px solid {BORDER};border-radius:8px;"
+        )
+        rl = QVBoxLayout(result_frame)
+        rl.setContentsMargins(14, 10, 14, 10)
+        rl.setSpacing(4)
+        result_name  = QLabel("")
+        result_name.setStyleSheet(f"color:{DARK_CARD};font-size:13px;font-weight:700;")
+        result_name.setWordWrap(True)
+        result_price = QLabel("")
+        result_price.setStyleSheet(f"color:{AMBER};font-size:22px;font-weight:800;")
+        result_gct   = QLabel("")
+        result_gct.setStyleSheet(f"color:{MUTED};font-size:11px;")
+        result_not_found = QLabel("Product not found")
+        result_not_found.setStyleSheet(f"color:{RED};font-size:12px;font-weight:600;")
+        result_not_found.setVisible(False)
+        rl.addWidget(result_name)
+        rl.addWidget(result_price)
+        rl.addWidget(result_gct)
+        rl.addWidget(result_not_found)
+        lay.addWidget(result_frame)
+
+        # Divider
+        div = QFrame(); div.setFrameShape(QFrame.Shape.HLine)
+        div.setStyleSheet(f"background:{BORDER};max-height:1px;border:none;")
+        lay.addWidget(div)
+
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.setFixedHeight(36)
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setStyleSheet(
+            f"QPushButton{{background:{DARK_CARD};color:white;border:none;"
+            f"border-radius:8px;font-size:12px;font-weight:600;}}"
+            f"QPushButton:hover{{background:#444;}}"
+        )
+        close_btn.clicked.connect(dlg.accept)
+        lay.addWidget(close_btn)
+
+        def _do_lookup():
+            text = self._clean_barcode(inp.text().strip())
+            if not text: return
+            p = get_product_by_barcode(text)
+            if not p:
+                results = get_products(search=text, limit=1)
+                p = results[0] if results else None
+            result_frame.setVisible(True)
+            if p:
+                gct_amt = p["selling_price"] * self._gct_rate if p["gct_applicable"] else 0
+                result_name.setText(p["name"])
+                result_price.setText(f"${p['selling_price']:.2f}")
+                result_gct.setText(
+                    f"Incl. GCT: ${gct_amt:.2f}" if p["gct_applicable"] else "No GCT"
+                )
+                result_name.setVisible(True)
+                result_price.setVisible(True)
+                result_gct.setVisible(True)
+                result_not_found.setVisible(False)
+            else:
+                result_name.setVisible(False)
+                result_price.setVisible(False)
+                result_gct.setVisible(False)
+                result_not_found.setVisible(True)
+
+        inp.returnPressed.connect(_do_lookup)
+        dlg.exec()
+        self.search_input.setFocus()
 
     # ================================================================
     # LOGOUT

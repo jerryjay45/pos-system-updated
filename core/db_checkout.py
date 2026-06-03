@@ -285,6 +285,51 @@ def session_totals(session_id: int) -> dict:
         return dict(row)
 
 
+def session_group_totals(session_id: int) -> list[dict]:
+    """Return sales broken down by product group for a session.
+
+    Joins receipt_items.product_id to the products DB to get group names.
+    Returns list of {group_name, total_sales, item_count} sorted by total desc.
+    """
+    from config import DB_PRODUCTS
+    with _conn() as con:
+        con.execute(f"ATTACH DATABASE ? AS pdb", (DB_PRODUCTS,))
+        try:
+            rows = con.execute(
+                """SELECT
+                       COALESCE(g.name, 'Ungrouped')  AS group_name,
+                       SUM(ri.line_total)              AS total_sales,
+                       SUM(ri.quantity)                AS item_count
+                   FROM receipt_items ri
+                   JOIN receipts r ON r.id = ri.receipt_id
+                   LEFT JOIN pdb.products p ON p.id = ri.product_id
+                   LEFT JOIN pdb.groups g ON g.id = p.group_id
+                   WHERE r.session_id = ?
+                     AND r.status = 'completed'
+                   GROUP BY g.id, g.name
+                   ORDER BY total_sales DESC""",
+                (session_id,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            con.execute("DETACH DATABASE pdb")
+
+
+def session_voided_receipts(session_id: int) -> list[dict]:
+    """Return all voided receipts for a session with their void reason."""
+    with _conn() as con:
+        rows = con.execute(
+            """SELECT r.receipt_number, r.total, r.created_at,
+                      rf.reason, rf.created_at AS voided_at
+               FROM receipts r
+               LEFT JOIN refunds rf ON rf.receipt_id = r.id
+               WHERE r.session_id = ? AND r.status = 'voided'
+               ORDER BY r.created_at""",
+            (session_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def get_refunds_for_receipt(receipt_id: int) -> list[dict]:
     """Return all refund/void records for a receipt, newest first."""
     with _conn() as con:

@@ -146,15 +146,29 @@ def print_refund(receipt: dict, refund: dict,
         return False
 
 
-def print_session(session: dict, parent=None) -> bool:
+def print_session(session: dict, report_type: str = "full",
+                  copies: int = 1, parent=None) -> bool:
     """Print a session summary / Z-report."""
     try:
         from utils.receipt_formatter import format_session
-        from core.db_checkout import session_totals
+        from core.db_checkout import (
+            session_totals, session_group_totals,
+            session_voided_receipts, get_session_receipts,
+            get_receipt_by_id,
+        )
         from core.db_users import get_user_by_id
 
         biz, currency = _get_biz_and_currency()
-        totals = session_totals(session["id"])
+        totals         = session_totals(session["id"])
+        grp_totals     = session_group_totals(session["id"])
+        voided         = session_voided_receipts(session["id"])
+
+        # Full report needs line items — fetch receipts with items
+        all_receipts = None
+        if report_type == "full":
+            receipts     = get_session_receipts(session["id"])
+            all_receipts = [get_receipt_by_id(r["id"]) for r in receipts
+                            if r.get("status") == "completed"]
 
         cashier = get_user_by_id(session["user_id"])
         cashier_name = cashier["full_name"] if cashier else "Unknown"
@@ -171,11 +185,35 @@ def print_session(session: dict, parent=None) -> bool:
             session, totals, cashier_name, biz,
             opened_by=opened_by,
             closed_by=closed_by,
-            currency=currency
+            currency=currency,
+            report_type=report_type,
+            group_totals=grp_totals,
+            voided_receipts=voided,
+            all_receipts=all_receipts,
         )
 
-        _save_text(f"session_{session['id']:04d}_{_stamp()}.txt", text)
-        return _send_to_printer(text, parent)
+        _save_text(f"session_{session['id']:04d}_{report_type}_{_stamp()}.txt", text)
+
+        # Override copies for this call
+        from utils.thermal_printer import ThermalPrinter, PrinterError
+        printer = ThermalPrinter.from_config()
+        printer._copies = copies
+
+        if not printer.is_configured:
+            return True
+
+        try:
+            with printer as p:
+                p.print_text(text)
+                p.cut()
+            return True
+        except PrinterError as e:
+            print(f"[PrintManager] Printer error: {e}")
+            if parent:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(parent, "Printer Error",
+                    f"Could not print.\n\n{e}\n\nText copy saved to receipts folder.")
+            return False
 
     except Exception as e:
         print(f"[PrintManager] print_session error: {e}")
