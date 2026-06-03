@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QTabWidget, QTableWidget, QTableWidgetItem,
     QHeaderView, QLineEdit, QComboBox, QCheckBox, QAbstractItemView,
-    QMessageBox, QScrollArea, QSpinBox, QDialog, QDialogButtonBox,
+    QMessageBox, QScrollArea, QSpinBox, QDoubleSpinBox, QDialog, QDialogButtonBox,
 )
 from PyQt6.QtCore import Qt, QTimer, QDateTime, pyqtSignal
 from PyQt6.QtGui import QColor, QDoubleValidator
