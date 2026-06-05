@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS stock_adjustments (
     product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
     qty_change  INTEGER NOT NULL,
     reason      TEXT    NOT NULL DEFAULT 'Restock',
-    adjusted_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    adjusted_by INTEGER DEFAULT NULL,
     adjusted_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -164,6 +164,38 @@ def init_db():
         gcols = {r[1] for r in con.execute("PRAGMA table_info(groups)")}
         if "profit_margin" not in gcols:
             con.execute("ALTER TABLE groups ADD COLUMN profit_margin REAL NOT NULL DEFAULT 0.0")
+
+        # ── Step 4: fix stock_adjustments — remove cross-DB FK to users ──
+        # Recreate without the REFERENCES users(id) which causes errors
+        # since users live in a separate DB file
+        has_sa = con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='stock_adjustments'"
+        ).fetchone()
+        if has_sa:
+            sa_cols = {r[1] for r in con.execute("PRAGMA table_info(stock_adjustments)")}
+            # Check if old FK definition exists by inspecting CREATE TABLE sql
+            sa_sql = con.execute(
+                "SELECT sql FROM sqlite_master WHERE name='stock_adjustments'"
+            ).fetchone()
+            if sa_sql and "REFERENCES users" in sa_sql[0]:
+                con.executescript("""
+                    PRAGMA foreign_keys=OFF;
+                    CREATE TABLE stock_adjustments_new (
+                        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                        product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+                        qty_change  INTEGER NOT NULL,
+                        reason      TEXT    NOT NULL DEFAULT 'Restock',
+                        adjusted_by INTEGER DEFAULT NULL,
+                        adjusted_at TEXT    NOT NULL DEFAULT (datetime('now'))
+                    );
+                    INSERT INTO stock_adjustments_new
+                        SELECT id, product_id, qty_change, reason, adjusted_by, adjusted_at
+                        FROM stock_adjustments;
+                    DROP TABLE stock_adjustments;
+                    ALTER TABLE stock_adjustments_new RENAME TO stock_adjustments;
+                    PRAGMA foreign_keys=ON;
+                """)
+
         con.commit()
 
 
@@ -569,9 +601,41 @@ def adjust_stock(product_id: int, qty_change: int,
 def get_stock_adjustments(product_id: int, limit: int = 20) -> list[dict]:
     with _conn() as con:
         return [dict(r) for r in con.execute(
-            "SELECT * FROM stock_adjustments WHERE product_id = ? "
-            "ORDER BY adjusted_at DESC LIMIT ?",
+            "SELECT sa.*, p.name AS product_name "
+            "FROM stock_adjustments sa JOIN products p ON p.id = sa.product_id "
+            "WHERE sa.product_id = ? ORDER BY sa.adjusted_at DESC LIMIT ?",
             (product_id, limit)
+        )]
+
+
+def get_all_stock_adjustments(search: str = "", limit: int = 100) -> list[dict]:
+    """Recent stock adjustments across all products, optionally filtered by product name."""
+    q = """
+        SELECT sa.*, p.name AS product_name
+        FROM   stock_adjustments sa
+        JOIN   products p ON p.id = sa.product_id
+        WHERE  1=1
+    """
+    params: list = []
+    if search:
+        q += " AND LOWER(p.name) LIKE ?"
+        params.append(f"%{search.lower()}%")
+    q += " ORDER BY sa.adjusted_at DESC LIMIT ?"
+    params.append(limit)
+    with _conn() as con:
+        return [dict(r) for r in con.execute(q, params)]
+
+
+def get_low_stock_products(threshold: int = 5) -> list[dict]:
+    """Products at or below the given stock threshold, excluding case products."""
+    with _conn() as con:
+        return [dict(r) for r in con.execute(
+            """SELECT p.*, g.name AS group_name
+               FROM   products p
+               LEFT   JOIN groups g ON g.id = p.group_id
+               WHERE  p.stock <= ? AND p.is_case = 0
+               ORDER  BY p.stock ASC, p.name""",
+            (threshold,)
         )]
 
 

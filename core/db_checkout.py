@@ -69,8 +69,8 @@ CREATE TABLE IF NOT EXISTS receipt_items (
 CREATE TABLE IF NOT EXISTS refunds (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     receipt_id      INTEGER NOT NULL REFERENCES receipts(id) ON DELETE CASCADE,
-    user_id         INTEGER NOT NULL,          -- supervisor/manager who actioned it
-    refund_type     TEXT    NOT NULL CHECK(refund_type IN ('void','partial','full')),
+    user_id         INTEGER NOT NULL,
+    refund_type     TEXT    NOT NULL CHECK(refund_type IN ('void','partial','full','exchange')),
     reason          TEXT    NOT NULL DEFAULT '',
     amount          REAL    NOT NULL DEFAULT 0.0,
     created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -328,6 +328,73 @@ def session_voided_receipts(session_id: int) -> list[dict]:
             (session_id,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def exchange_receipt(receipt_id: int, user_id: int,
+                     reason: str, exchange_note: str = "") -> bool:
+    """Record an exchange against a completed receipt.
+    The receipt status stays 'completed' but a refund record of
+    type 'exchange' is created for audit purposes.
+    """
+    with _conn() as con:
+        row = con.execute(
+            "SELECT id, total FROM receipts WHERE id=? AND status='completed'",
+            (receipt_id,)
+        ).fetchone()
+        if not row:
+            return False
+        full_reason = reason
+        if exchange_note:
+            full_reason = f"{reason} | Exchange note: {exchange_note}"
+        con.execute(
+            "INSERT INTO refunds (receipt_id, user_id, refund_type, reason, amount) "
+            "VALUES (?,?,'exchange',?,?)",
+            (receipt_id, user_id, full_reason, row["total"])
+        )
+        con.commit()
+        return True
+
+
+def get_receipts_with_refund_summary(
+    status: str = None,
+    search: str = "",
+    date_from: str = "",
+    date_to: str = "",
+    limit: int = 200,
+    offset: int = 0,
+) -> list[dict]:
+    """Like get_receipts but enriches each row with refund summary data:
+      - has_partial:    bool — has at least one partial refund
+      - has_exchange:   bool — has at least one exchange record
+      - refunded_total: float — sum of all partial refund amounts
+    """
+    receipts = get_receipts(
+        status=status, search=search,
+        date_from=date_from, date_to=date_to,
+        limit=limit, offset=offset,
+    )
+    if not receipts:
+        return receipts
+    ids = [r["id"] for r in receipts]
+    placeholders = ",".join("?" * len(ids))
+    with _conn() as con:
+        rows = con.execute(
+            f"""SELECT receipt_id,
+                       SUM(CASE WHEN refund_type='partial' THEN amount ELSE 0 END) AS refunded_total,
+                       MAX(CASE WHEN refund_type='partial' THEN 1 ELSE 0 END)      AS has_partial,
+                       MAX(CASE WHEN refund_type='exchange' THEN 1 ELSE 0 END)     AS has_exchange
+                FROM refunds
+                WHERE receipt_id IN ({placeholders})
+                GROUP BY receipt_id""",
+            ids
+        ).fetchall()
+    summary = {r["receipt_id"]: dict(r) for r in rows}
+    for rec in receipts:
+        s = summary.get(rec["id"], {})
+        rec["has_partial"]    = bool(s.get("has_partial", 0))
+        rec["has_exchange"]   = bool(s.get("has_exchange", 0))
+        rec["refunded_total"] = s.get("refunded_total", 0.0) or 0.0
+    return receipts
 
 
 def get_refunds_for_receipt(receipt_id: int) -> list[dict]:

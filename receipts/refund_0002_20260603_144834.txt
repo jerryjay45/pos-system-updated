@@ -1,0 +1,20 @@
+               MY BUSINESS                
+──────────────────────────────────────────
+          *** PARTIAL REFUND ***          
+──────────────────────────────────────────
+Original Receipt:                    #0002
+Sale Date:                01/06/2026 23:16
+Refunded:                 03/06/2026 14:48
+Refunded By:                 ADMIN MANAGER
+──────────────────────────────────────────
+Reason:
+spoiled
+
+Original Total:                     $23.05
+------------------------------------------
+REFUND AMOUNT:                      $20.43
+──────────────────────────────────────────
+        Please retain this receipt        
+──────────────────────────────────────────
+       THANK YOU FOR YOUR BUSINESS!       
+

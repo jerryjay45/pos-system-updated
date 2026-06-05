@@ -188,7 +188,10 @@ class ManagerWindow(SupervisorWindow):
         self.tabs.addTab(self._build_products_tab(),     "📦  Products")
         self.tabs.addTab(self._build_reports_tab(),      "📊  Reports")
         self.tabs.addTab(self._build_transactions_tab(), "🧾  Transactions")
-        self.tabs.addTab(self._build_void_tab(),         "↩  Void / Refund")
+        from ui.supervisor.void_refund_tab import VoidRefundTab
+        self._void_refund_tab = VoidRefundTab(user=self.user, parent=self)
+        self.tabs.addTab(self._void_refund_tab,          "↩  Void / Refund")
+        self.tabs.addTab(self._build_stock_tab(),        "📊  Stock")
         self.tabs.addTab(self._build_quickkeys_tab(),    "⌨  Quick Keys")
         self.tabs.setCurrentIndex(0)
         return self.tabs

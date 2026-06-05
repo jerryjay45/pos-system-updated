@@ -28,6 +28,35 @@ con.execute("""
 """)
 print("✓  discount_levels table")
 
+# Add exchange to refund_type — recreate table with new constraint
+# SQLite does not support ALTER COLUMN, so we migrate via rename+recreate
+table_exists = con.execute(
+    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='refunds'"
+).fetchone()
+
+if not table_exists:
+    print("~  refunds table does not exist yet — will be created with exchange support")
+else:
+    try:
+        con.execute("SELECT 1 FROM refunds WHERE refund_type='exchange' LIMIT 1")
+        print("~  refunds.refund_type already supports exchange")
+    except Exception:
+        con.executescript("""
+            ALTER TABLE refunds RENAME TO refunds_old;
+            CREATE TABLE refunds (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                receipt_id      INTEGER NOT NULL REFERENCES receipts(id) ON DELETE CASCADE,
+                user_id         INTEGER NOT NULL,
+                refund_type     TEXT    NOT NULL CHECK(refund_type IN ('void','partial','full','exchange')),
+                reason          TEXT    NOT NULL DEFAULT '',
+                amount          REAL    NOT NULL DEFAULT 0.0,
+                created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+            );
+            INSERT INTO refunds SELECT * FROM refunds_old;
+            DROP TABLE refunds_old;
+        """)
+        print("✓  refunds.refund_type updated to support exchange")
+
 # cost column on price_groups
 try:
     con.execute("ALTER TABLE price_groups ADD COLUMN cost REAL NOT NULL DEFAULT 0.0")

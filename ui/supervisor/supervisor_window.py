@@ -94,7 +94,10 @@ class SupervisorWindow(BaseWindow):
         self.tabs.addTab(self._build_products_tab(),     "📦  Products")
         self.tabs.addTab(self._build_reports_tab(),      "📊  Reports")
         self.tabs.addTab(self._build_transactions_tab(), "🧾  Transactions")
-        self.tabs.addTab(self._build_void_tab(),         "↩  Void / Refund")
+        from ui.supervisor.void_refund_tab import VoidRefundTab
+        self._void_refund_tab = VoidRefundTab(user=self.user, parent=self)
+        self.tabs.addTab(self._void_refund_tab, "↩  Void / Refund")
+        self.tabs.addTab(self._build_stock_tab(),        "📊  Stock")
         self.tabs.addTab(self._build_quickkeys_tab(),    "⌨  Quick Keys")
         self.tabs.setCurrentIndex(0)
         return self.tabs
@@ -1241,13 +1244,15 @@ class SupervisorWindow(BaseWindow):
     def _build_void_tab(self):
         w = QWidget(); w.setStyleSheet(f"background:{WARM_WHITE};")
         lay = QVBoxLayout(w); lay.setContentsMargins(8,8,8,8); lay.setSpacing(8)
+
+        # ── Search bar ─────────────────────────────────────────────────
         sr = QHBoxLayout(); sr.setSpacing(8)
         self.vr_search = QLineEdit()
         self.vr_search.setPlaceholderText("🔍  Receipt #, cashier or date (YYYY-MM-DD)…")
         self.vr_search.setFixedHeight(32); self.vr_search.setStyleSheet(self._input_style())
         self.vr_search.returnPressed.connect(self._vr_search_fn)
         self.vr_status_filter = QComboBox()
-        self.vr_status_filter.addItems(["Completed Only","All Statuses"])
+        self.vr_status_filter.addItems(["Completed Only", "All Statuses"])
         self.vr_status_filter.setFixedHeight(32); self.vr_status_filter.setFixedWidth(150)
         self.vr_status_filter.setStyleSheet(self._combo_style())
         search_btn = QPushButton("Search"); search_btn.setFixedHeight(32)
@@ -1256,15 +1261,18 @@ class SupervisorWindow(BaseWindow):
         sr.addWidget(self.vr_search, stretch=1); sr.addWidget(self.vr_status_filter)
         sr.addWidget(search_btn); sr.addWidget(refresh_btn)
         lay.addLayout(sr)
+
+        # ── Splitter: left = receipts list, right = detail + actions ──
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setStyleSheet(f"QSplitter::handle{{background:{BORDER};width:1px;}}")
+
+        # Left — receipts table
         left = QFrame(); left.setStyleSheet(f"background:{WHITE};border-radius:8px;border:1px solid {BORDER};")
         ll = QVBoxLayout(left); ll.setContentsMargins(0,0,0,0)
         self.vr_table = QTableWidget(); self.vr_table.setColumnCount(6)
         self.vr_table.setHorizontalHeaderLabels(["Receipt #","Cashier","Date","Time","Total","Status"])
         hh = self.vr_table.horizontalHeader()
-        for c in range(6):
-            hh.setSectionResizeMode(c, QHeaderView.ResizeMode.Stretch)
+        for c in range(6): hh.setSectionResizeMode(c, QHeaderView.ResizeMode.Stretch)
         self.vr_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.vr_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.vr_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -1273,7 +1281,7 @@ class SupervisorWindow(BaseWindow):
         self.vr_table.itemClicked.connect(lambda _: self._vr_on_row_selected())
         ll.addWidget(self.vr_table, stretch=1)
 
-        # Pagination controls
+        # Pagination
         vr_pg_row = QHBoxLayout(); vr_pg_row.setSpacing(8)
         self._vr_pg_prev = self._outline_btn("← Prev"); self._vr_pg_prev.setFixedWidth(80)
         self._vr_pg_prev.clicked.connect(self._vr_prev_page)
@@ -1283,18 +1291,24 @@ class SupervisorWindow(BaseWindow):
         self._vr_pg_next = self._outline_btn("Next →"); self._vr_pg_next.setFixedWidth(80)
         self._vr_pg_next.clicked.connect(self._vr_next_page)
         vr_pg_row.addStretch()
-        vr_pg_row.addWidget(self._vr_pg_prev)
-        vr_pg_row.addWidget(self._vr_pg_label)
-        vr_pg_row.addWidget(self._vr_pg_next)
+        vr_pg_row.addWidget(self._vr_pg_prev); vr_pg_row.addWidget(self._vr_pg_label); vr_pg_row.addWidget(self._vr_pg_next)
         vr_pg_row.addStretch()
         ll.addLayout(vr_pg_row)
+
+        # Right — detail + actions panel
         right = QFrame()
         right.setStyleSheet(f"background:{WHITE};border-radius:8px;border:1px solid {BORDER};")
-        rl = QVBoxLayout(right); rl.setContentsMargins(12,12,12,12); rl.setSpacing(6)
+        rl = QVBoxLayout(right); rl.setContentsMargins(14,14,14,14); rl.setSpacing(8)
+
         self.vr_receipt_title = QLabel("Select a receipt")
         self.vr_receipt_title.setStyleSheet(f"color:{DARK_CARD};font-size:14px;font-weight:700;")
-        self.vr_receipt_meta = QLabel(""); self.vr_receipt_meta.setStyleSheet(f"color:{LABEL_TEXT};font-size:12px;font-weight:500;"); self.vr_receipt_meta.setWordWrap(True)
-        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine); sep.setStyleSheet(f"color:{BORDER};")
+        self.vr_receipt_meta  = QLabel("")
+        self.vr_receipt_meta.setStyleSheet(f"color:{LABEL_TEXT};font-size:12px;font-weight:500;")
+        self.vr_receipt_meta.setWordWrap(True)
+        sep = QFrame(); sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"background:{BORDER};max-height:1px;border:none;")
+
+        # Items table with checkboxes for partial refund
         self.vr_items_table = QTableWidget(); self.vr_items_table.setColumnCount(5)
         self.vr_items_table.setHorizontalHeaderLabels(["✓","Item","Qty","Price","Total"])
         hh2 = self.vr_items_table.horizontalHeader()
@@ -1303,37 +1317,72 @@ class SupervisorWindow(BaseWindow):
         self.vr_items_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.vr_items_table.verticalHeader().setVisible(False); self.vr_items_table.setShowGrid(False)
         self.vr_items_table.setStyleSheet(self._table_style())
-        self.vr_totals = QLabel(""); self.vr_totals.setStyleSheet(f"color:{DARK_CARD};font-size:12px;font-weight:600;")
-        self.vr_totals.setAlignment(Qt.AlignmentFlag.AlignRight); self.vr_totals.setWordWrap(True)
-        rl.addWidget(self.vr_receipt_title); rl.addWidget(self.vr_receipt_meta)
-        rl.addWidget(sep); rl.addWidget(self.vr_items_table, stretch=1); rl.addWidget(self.vr_totals)
-        rl.addWidget(self._flabel("Refund Mode"))
-        self.vr_refund_mode = QComboBox(); self.vr_refund_mode.addItems(["Full Refund","Partial Refund"])
-        self.vr_refund_mode.setStyleSheet(self._combo_style())
-        self.vr_refund_mode.currentIndexChanged.connect(self._vr_on_mode_changed); rl.addWidget(self.vr_refund_mode)
-        rl.addWidget(self._flabel("Reason (required)"))
-        self.vr_reason = QLineEdit(); self.vr_reason.setPlaceholderText("Enter reason…")
+
+        self.vr_totals = QLabel("")
+        self.vr_totals.setStyleSheet(f"color:{DARK_CARD};font-size:12px;font-weight:600;")
+        self.vr_totals.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+        # Refund mode
+        mode_row = QHBoxLayout(); mode_row.setSpacing(8)
+        mode_row.addWidget(QLabel("Mode:"))
+        self.vr_refund_mode = QComboBox()
+        self.vr_refund_mode.addItems(["Full Void / Refund", "Partial Refund"])
+        self.vr_refund_mode.setFixedHeight(30); self.vr_refund_mode.setStyleSheet(self._combo_style())
+        self.vr_refund_mode.currentIndexChanged.connect(self._vr_on_mode_changed)
+        mode_row.addWidget(self.vr_refund_mode, stretch=1)
+
+        # Reason input
+        self.vr_reason = QLineEdit()
+        self.vr_reason.setPlaceholderText("Reason (required)…")
         self.vr_reason.setFixedHeight(30); self.vr_reason.setStyleSheet(self._input_style())
-        self.vr_reason.textChanged.connect(self._vr_update_buttons); rl.addWidget(self.vr_reason)
-        self.vr_selected_amount = QLabel(""); self.vr_selected_amount.setStyleSheet(f"color:{AMBER};font-size:11px;font-weight:600;"); rl.addWidget(self.vr_selected_amount)
-        self.vr_status_banner = QLabel(""); self.vr_status_banner.setVisible(False); self.vr_status_banner.setWordWrap(True); rl.addWidget(self.vr_status_banner)
+        self.vr_reason.textChanged.connect(self._vr_update_buttons)
+
+        # Selected amount label (for partial)
+        self.vr_amount_lbl = QLabel("")
+        self.vr_amount_lbl.setStyleSheet(f"color:{AMBER};font-size:12px;font-weight:600;")
+        self.vr_amount_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
+
+        # Status banner
+        self.vr_status_banner = QLabel("")
+        self.vr_status_banner.setVisible(False)
+        self.vr_status_banner.setWordWrap(True)
+
+        # Action buttons
         btn_row = QHBoxLayout(); btn_row.setSpacing(8)
-        self.vr_void_btn = self._danger_btn("↩  Void Transaction"); self.vr_void_btn.setEnabled(False); self.vr_void_btn.clicked.connect(self._vr_do_void)
-        self.vr_refund_btn = QPushButton("↩  Issue Refund"); self.vr_refund_btn.setFixedHeight(32)
+        self.vr_void_btn = QPushButton("↩  Void Transaction"); self.vr_void_btn.setFixedHeight(34)
+        self.vr_void_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.vr_void_btn.setStyleSheet(f"QPushButton{{background:{RED};color:white;border:none;border-radius:7px;font-size:12px;font-weight:700;}}QPushButton:hover{{background:#7A1E1E;}}QPushButton:disabled{{background:{MUTED};color:white;}}")
+        self.vr_void_btn.setEnabled(False); self.vr_void_btn.clicked.connect(self._vr_do_void)
+        self.vr_refund_btn = QPushButton("↩  Issue Refund"); self.vr_refund_btn.setFixedHeight(34)
         self.vr_refund_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.vr_refund_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.vr_refund_btn.setStyleSheet(f"QPushButton{{background:{AMBER};color:white;border:none;border-radius:16px;font-size:11px;font-weight:600;padding:0 14px;}}QPushButton:hover{{background:{AMBER_DARK};}}QPushButton:disabled{{background:{MUTED};}}")
+        self.vr_refund_btn.setStyleSheet(f"QPushButton{{background:{AMBER};color:white;border:none;border-radius:7px;font-size:12px;font-weight:700;}}QPushButton:hover{{background:{AMBER_DARK};}}QPushButton:disabled{{background:{MUTED};color:white;}}")
         self.vr_refund_btn.setEnabled(False); self.vr_refund_btn.clicked.connect(self._vr_do_refund)
-        btn_row.addWidget(self.vr_void_btn); btn_row.addWidget(self.vr_refund_btn); rl.addLayout(btn_row)
+        btn_row.addWidget(self.vr_void_btn, stretch=1); btn_row.addWidget(self.vr_refund_btn, stretch=1)
+
+        rl.addWidget(self.vr_receipt_title)
+        rl.addWidget(self.vr_receipt_meta)
+        rl.addWidget(sep)
+        rl.addWidget(self.vr_items_table, stretch=1)
+        rl.addWidget(self.vr_totals)
+        rl.addLayout(mode_row)
+        rl.addWidget(self.vr_reason)
+        rl.addWidget(self.vr_amount_lbl)
+        rl.addWidget(self.vr_status_banner)
+        rl.addLayout(btn_row)
+
         splitter.addWidget(left); splitter.addWidget(right)
         splitter.setStretchFactor(0, 1); splitter.setStretchFactor(1, 1)
         lay.addWidget(splitter, stretch=1)
-        self._vr_selected_tx_id=None; self._vr_selected_tx_status=None; self._vr_items_data=[]
-        self._vr_pg_page     = 0
-        self._vr_pg_per_page = 50
-        self._vr_pg_search   = ""
-        self._vr_pg_status   = "completed"
-        self._vr_load(); return w
+
+        self._vr_selected_tx_id     = None
+        self._vr_selected_tx_status = None
+        self._vr_items_data         = []
+        self._vr_pg_page            = 0
+        self._vr_pg_per_page        = 50
+        self._vr_pg_search          = ""
+        self._vr_pg_status          = "completed"
+        self._vr_load()
+        return w
 
     def _vr_load(self, search="", status_filter="completed"):
         self._vr_pg_search = search
@@ -1412,10 +1461,15 @@ class SupervisorWindow(BaseWindow):
         self._vr_update_selected_amount()
 
     def _vr_update_selected_amount(self):
-        if not self._vr_items_data or self.vr_refund_mode.currentIndex()==0:
-            self.vr_selected_amount.setText(""); return
-        total = sum(it["line_total"] for r, it in enumerate(self._vr_items_data) if (lambda w: w and w.findChild(QCheckBox) and w.findChild(QCheckBox).isChecked())(self.vr_items_table.cellWidget(r, 0)))
-        self.vr_selected_amount.setText(f"Selected refund: ${total:.2f}")
+        if not self._vr_items_data or self.vr_refund_mode.currentIndex() == 0:
+            self.vr_amount_lbl.setText(""); return
+        total = 0.0
+        for r, it in enumerate(self._vr_items_data):
+            w = self.vr_items_table.cellWidget(r, 0)
+            chk = w.findChild(QCheckBox) if w else None
+            if chk and chk.isChecked():
+                total += it["line_total"]
+        self.vr_amount_lbl.setText(f"Selected refund: ${total:.2f}")
 
     def _vr_update_buttons(self):
         ok = self._vr_selected_tx_id is not None and self._vr_selected_tx_status=="completed" and bool(self.vr_reason.text().strip())
@@ -1488,6 +1542,10 @@ class SupervisorWindow(BaseWindow):
     # ================================================================
     # QUICK KEYS TAB
     # ================================================================
+
+    def _build_stock_tab(self):
+        from ui.supervisor.stock_tab import StockTab
+        return StockTab(self.user, parent=self)
 
     def _build_quickkeys_tab(self):
         w = QWidget(); w.setStyleSheet(f"background:{WARM_WHITE};")
