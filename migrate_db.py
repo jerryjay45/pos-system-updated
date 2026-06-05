@@ -57,6 +57,26 @@ else:
         """)
         print("✓  refunds.refund_type updated to support exchange")
 
+# refund_items table
+try:
+    con.execute("SELECT 1 FROM refund_items LIMIT 1")
+    print("~  refund_items already exists")
+except Exception:
+    con.executescript("""
+        CREATE TABLE IF NOT EXISTS refund_items (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            refund_id               INTEGER NOT NULL REFERENCES refunds(id) ON DELETE CASCADE,
+            product_id              INTEGER,
+            product_name            TEXT    NOT NULL DEFAULT '',
+            qty                     INTEGER NOT NULL DEFAULT 1,
+            unit_price              REAL    NOT NULL DEFAULT 0.0,
+            exchange_for_name       TEXT    NOT NULL DEFAULT '',
+            exchange_for_product_id INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_refund_items_refund ON refund_items(refund_id);
+    """)
+    print("✓  refund_items table created")
+
 # cost column on price_groups
 try:
     con.execute("ALTER TABLE price_groups ADD COLUMN cost REAL NOT NULL DEFAULT 0.0")

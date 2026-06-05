@@ -76,6 +76,18 @@ CREATE TABLE IF NOT EXISTS refunds (
     created_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE IF NOT EXISTS refund_items (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    refund_id               INTEGER NOT NULL REFERENCES refunds(id) ON DELETE CASCADE,
+    product_id              INTEGER,
+    product_name            TEXT    NOT NULL DEFAULT '',
+    qty                     INTEGER NOT NULL DEFAULT 1,
+    unit_price              REAL    NOT NULL DEFAULT 0.0,
+    exchange_for_name       TEXT    NOT NULL DEFAULT '',
+    exchange_for_product_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_refund_items_refund ON refund_items(refund_id);
+
 CREATE INDEX IF NOT EXISTS idx_receipts_number   ON receipts(receipt_number);
 CREATE INDEX IF NOT EXISTS idx_receipts_user     ON receipts(user_id);
 CREATE INDEX IF NOT EXISTS idx_receipts_session  ON receipts(session_id);
@@ -245,8 +257,23 @@ def void_receipt(receipt_id: int, user_id: int, reason: str) -> bool:
         return True
 
 
+def get_refund_items(refund_id: int) -> list[dict]:
+    """Return all item-level records for a refund/exchange."""
+    with _conn() as con:
+        return [dict(r) for r in con.execute(
+            "SELECT * FROM refund_items WHERE refund_id = ? ORDER BY id",
+            (refund_id,)
+        )]
+
+
 def refund_receipt(receipt_id: int, user_id: int, reason: str,
-                   amount: float, refund_type: str = "full") -> bool:
+                   amount: float, refund_type: str = "full",
+                   items: list[dict] = None) -> bool:
+    """Refund a receipt, optionally with item-level detail.
+
+    items — list of {product_id, product_name, qty, unit_price}
+            If None, no item records are stored.
+    """
     with _conn() as con:
         cur = con.execute(
             "UPDATE receipts SET status='refunded' WHERE id=? AND status='completed'",
@@ -254,11 +281,21 @@ def refund_receipt(receipt_id: int, user_id: int, reason: str,
         )
         if cur.rowcount == 0:
             return False
-        con.execute(
+        ins = con.execute(
             "INSERT INTO refunds (receipt_id, user_id, refund_type, reason, amount) "
             "VALUES (?,?,?,?,?)",
             (receipt_id, user_id, refund_type, reason, amount)
         )
+        refund_id = ins.lastrowid
+        if items:
+            for it in items:
+                con.execute(
+                    "INSERT INTO refund_items "
+                    "(refund_id, product_id, product_name, qty, unit_price) "
+                    "VALUES (?,?,?,?,?)",
+                    (refund_id, it.get("product_id"), it.get("product_name", ""),
+                     it.get("qty", 1), it.get("unit_price", 0.0))
+                )
         con.commit()
         return True
 
@@ -331,10 +368,12 @@ def session_voided_receipts(session_id: int) -> list[dict]:
 
 
 def exchange_receipt(receipt_id: int, user_id: int,
-                     reason: str, exchange_note: str = "") -> bool:
+                     reason: str, exchange_note: str = "",
+                     items: list[dict] = None) -> bool:
     """Record an exchange against a completed receipt.
-    The receipt status stays 'completed' but a refund record of
-    type 'exchange' is created for audit purposes.
+
+    items — list of {product_id, product_name, qty, unit_price,
+                      exchange_for_name, exchange_for_product_id}
     """
     with _conn() as con:
         row = con.execute(
@@ -345,12 +384,25 @@ def exchange_receipt(receipt_id: int, user_id: int,
             return False
         full_reason = reason
         if exchange_note:
-            full_reason = f"{reason} | Exchange note: {exchange_note}"
-        con.execute(
+            full_reason = f"{reason} | Note: {exchange_note}"
+        ins = con.execute(
             "INSERT INTO refunds (receipt_id, user_id, refund_type, reason, amount) "
             "VALUES (?,?,'exchange',?,?)",
             (receipt_id, user_id, full_reason, row["total"])
         )
+        refund_id = ins.lastrowid
+        if items:
+            for it in items:
+                con.execute(
+                    "INSERT INTO refund_items "
+                    "(refund_id, product_id, product_name, qty, unit_price, "
+                    " exchange_for_name, exchange_for_product_id) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (refund_id, it.get("product_id"), it.get("product_name", ""),
+                     it.get("qty", 1), it.get("unit_price", 0.0),
+                     it.get("exchange_for_name", ""),
+                     it.get("exchange_for_product_id"))
+                )
         con.commit()
         return True
 
