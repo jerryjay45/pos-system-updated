@@ -427,7 +427,8 @@ def delete_group(group_id: int):
 # ── Products ──────────────────────────────────────────────────────────────────
 
 def get_products(search: str = "", group_id: int = None,
-                 limit: int = 100, offset: int = 0) -> list[dict]:
+                 limit: int = 100, offset: int = 0,
+                 exclude_cases: bool = False) -> list[dict]:
     q = """
         SELECT p.*,
                g.name  AS group_name,
@@ -440,6 +441,8 @@ def get_products(search: str = "", group_id: int = None,
         WHERE  1=1
     """
     params: list = []
+    if exclude_cases:
+        q += " AND p.is_case = 0"
     if search:
         q += """
           AND (LOWER(p.barcode) LIKE ?
@@ -662,7 +665,8 @@ def increment_stock(product_id: int, qty: int):
         con.commit()
 
 
-def count_products(search: str = "", group_id: int = None) -> int:
+def count_products(search: str = "", group_id: int = None,
+                   exclude_cases: bool = False) -> int:
     q = """
         SELECT COUNT(*) FROM products p
         LEFT JOIN price_groups ag ON ag.id = p.alias_group_id
@@ -670,6 +674,8 @@ def count_products(search: str = "", group_id: int = None) -> int:
         WHERE 1=1
     """
     params: list = []
+    if exclude_cases:
+        q += " AND p.is_case = 0"
     if search:
         q += """ AND (LOWER(p.barcode) LIKE ? OR LOWER(p.name) LIKE ?
                    OR LOWER(ag.name)   LIKE ? OR LOWER(vg.name) LIKE ?)"""

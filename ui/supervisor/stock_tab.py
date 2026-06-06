@@ -263,7 +263,7 @@ class StockTab(QWidget):
         )
         rl.addWidget(self.adj_reason)
 
-        # Add / Remove buttons
+        # Add / Remove / Cancel buttons
         rl.addWidget(self._section_lbl("Action"))
         btn_row = QHBoxLayout(); btn_row.setSpacing(8)
         self.adj_add_btn = QPushButton("＋  Add Stock"); self.adj_add_btn.setFixedHeight(36)
@@ -289,8 +289,21 @@ class StockTab(QWidget):
             f"QPushButton:disabled{{color:{MUTED};border-color:{BORDER};}}"
         )
         self.adj_rem_btn.clicked.connect(self._do_remove)
+
+        self.adj_cancel_btn = QPushButton("Cancel"); self.adj_cancel_btn.setFixedHeight(36)
+        self.adj_cancel_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.adj_cancel_btn.setEnabled(False)
+        self.adj_cancel_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{MUTED};"
+            f"border:1.5px solid {BORDER};border-radius:7px;"
+            f"font-size:12px;font-weight:600;}}"
+            f"QPushButton:hover{{background:{BORDER};color:{DARK_CARD};}}"
+            f"QPushButton:disabled{{color:{MUTED};border-color:{BORDER};}}"
+        )
+        self.adj_cancel_btn.clicked.connect(self._cancel_adjust)
         btn_row.addWidget(self.adj_add_btn, stretch=1)
         btn_row.addWidget(self.adj_rem_btn, stretch=1)
+        btn_row.addWidget(self.adj_cancel_btn)
         rl.addLayout(btn_row)
 
         # Feedback label
@@ -353,10 +366,11 @@ class StockTab(QWidget):
             if search: products = [p for p in products if search.lower() in p["name"].lower()]
             total = len(products); pages = 1
         else:
-            total    = count_products(search=search)
+            total    = count_products(search=search, exclude_cases=True)
             pages    = max(1, (total + self._pg_per_page - 1) // self._pg_per_page)
             self._pg_page = min(self._pg_page, pages - 1)
-            products = get_products(search=search, limit=self._pg_per_page,
+            products = get_products(search=search, exclude_cases=True,
+                                    limit=self._pg_per_page,
                                     offset=self._pg_page * self._pg_per_page)
 
         self.stock_table.setRowCount(0)
@@ -422,7 +436,23 @@ class StockTab(QWidget):
         self.adj_feedback.setText("")
         self.adj_add_btn.setEnabled(True)
         self.adj_rem_btn.setEnabled(True)
+        self.adj_cancel_btn.setEnabled(True)
         self.hist_btn.setEnabled(True)
+
+    def _cancel_adjust(self):
+        """Deselect product and reset the right panel."""
+        self._selected_product_id   = None
+        self._selected_product_name = ""
+        self.stock_table.clearSelection()
+        self.adj_title.setText("Select a product to adjust")
+        self.adj_stock_lbl.setText("")
+        self.adj_qty.setValue(1)
+        self.adj_reason.setCurrentIndex(0)
+        self.adj_feedback.setText("")
+        self.adj_add_btn.setEnabled(False)
+        self.adj_rem_btn.setEnabled(False)
+        self.adj_cancel_btn.setEnabled(False)
+        self.hist_btn.setEnabled(False)
 
     def _do_add(self):
         if not self._selected_product_id: return

@@ -17,9 +17,9 @@ from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QColor, QFont
 
 from ui.shared.theme import (
-    AMBER, AMBER_DARK, AMBER_LIGHTEST,
+    AMBER, AMBER_DARK, AMBER_LIGHTEST, AMBER_BG,
     DARK, DARK_2, DARK_4, DARK_CARD,
-    WHITE, WARM_WHITE, BORDER,
+    WHITE, WARM_WHITE, BORDER, BORDER_LIGHT,
     MUTED, LABEL_TEXT,
     RED, RED_LIGHT, GREEN, GREEN_LIGHT,
 )
@@ -40,34 +40,44 @@ def _div():
     d.setStyleSheet(f"background:{BORDER};max-height:1px;border:none;")
     return d
 
-def _lbl(text, color=None, size=11, bold=False):
+def _lbl(text, color=None, size=12, bold=False):
     l = QLabel(text)
-    style = f"color:{color or LABEL_TEXT};font-size:{size}px;"
+    style = f"color:{color or DARK_CARD};font-size:{size}px;font-weight:{'700' if bold else '500'};"
     if bold: style += "font-weight:700;"
     l.setStyleSheet(style)
     return l
 
 INPUT_STYLE = (
-    f"QLineEdit,QTextEdit{{background:{WARM_WHITE};color:{DARK_CARD};"
-    f"border:1px solid {BORDER};border-radius:7px;"
-    f"padding:0 10px;font-size:12px;}}"
+    f"QLineEdit,QTextEdit{{background:{WHITE};color:{DARK_CARD};"
+    f"border:2px solid {BORDER};border-radius:7px;"
+    f"padding:0 10px;font-size:13px;font-weight:500;}}"
     f"QLineEdit:focus,QTextEdit:focus{{border-color:{AMBER};}}"
 )
 COMBO_STYLE = (
-    f"QComboBox{{background:{WARM_WHITE};color:{DARK_CARD};"
-    f"border:1px solid {BORDER};border-radius:7px;padding:0 10px;font-size:12px;}}"
+    f"QComboBox{{background:{WHITE};color:{DARK_CARD};"
+    f"border:2px solid {BORDER};border-radius:7px;padding:0 10px;"
+    f"font-size:13px;font-weight:500;}}"
     f"QComboBox:focus{{border-color:{AMBER};}}"
-    f"QComboBox::drop-down{{border:none;}}"
+    f"QComboBox::drop-down{{border:none;width:20px;}}"
 )
-def _btn(text, color=AMBER, text_color="white", h=34):
+def _btn(text, color=AMBER, text_color="white", h=34, outlined=False):
     b = QPushButton(text); b.setFixedHeight(h)
     b.setCursor(Qt.CursorShape.PointingHandCursor)
-    b.setStyleSheet(
-        f"QPushButton{{background:{color};color:{text_color};border:none;"
-        f"border-radius:7px;font-size:12px;font-weight:600;padding:0 14px;}}"
-        f"QPushButton:hover{{opacity:0.85;}}"
-        f"QPushButton:disabled{{background:{MUTED};color:#aaa;}}"
-    )
+    if outlined:
+        b.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{color};"
+            f"border:1.5px solid {color};border-radius:7px;"
+            f"font-size:12px;font-weight:700;padding:0 14px;}}"
+            f"QPushButton:hover{{background:{color};color:white;}}"
+            f"QPushButton:disabled{{color:{MUTED};border-color:{MUTED};}}"
+        )
+    else:
+        b.setStyleSheet(
+            f"QPushButton{{background:{color};color:{text_color};border:none;"
+            f"border-radius:7px;font-size:12px;font-weight:700;padding:0 14px;}}"
+            f"QPushButton:hover{{opacity:0.85;}}"
+            f"QPushButton:disabled{{background:{MUTED};color:white;}}"
+        )
     return b
 
 
@@ -94,7 +104,7 @@ class VoidRefundTab(QWidget):
 
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setHandleWidth(4)
-        split.setStyleSheet("QSplitter::handle{background:#2a2a2a;}")
+        split.setStyleSheet(f"QSplitter::handle{{background:{BORDER};width:1px;}}")
         root.addWidget(split)
 
         split.addWidget(self._build_left())
@@ -105,7 +115,7 @@ class VoidRefundTab(QWidget):
 
     def _build_left(self):
         w = QWidget()
-        w.setStyleSheet(f"background:{DARK_2};")
+        w.setStyleSheet(f"background:{WHITE};border-right:1px solid {BORDER_LIGHT};")
         lay = QVBoxLayout(w)
         lay.setContentsMargins(10, 10, 10, 10)
         lay.setSpacing(8)
@@ -115,30 +125,37 @@ class VoidRefundTab(QWidget):
         self.search_inp.setPlaceholderText("🔍  Receipt # or cashier…")
         self.search_inp.setFixedHeight(34)
         self.search_inp.setStyleSheet(INPUT_STYLE)
+        self.search_inp.setStyleSheet(INPUT_STYLE)
         self.search_inp.textChanged.connect(self._load_list)
         lay.addWidget(self.search_inp)
 
-        # Date range
+        # Date range (optional)
+        from PyQt6.QtWidgets import QCheckBox
         date_row = QHBoxLayout(); date_row.setSpacing(6)
-        date_row.addWidget(_lbl("From:"))
+        self.date_chk = QCheckBox("Date filter")
+        self.date_chk.setChecked(False)
+        self.date_chk.toggled.connect(self._on_date_toggled)
+        date_row.addWidget(self.date_chk)
         self.date_from = QDateEdit()
         self.date_from.setDate(QDate.currentDate().addDays(-30))
         self.date_from.setCalendarPopup(True)
         self.date_from.setFixedHeight(30)
+        self.date_from.setEnabled(False)
         self.date_from.dateChanged.connect(self._load_list)
         date_row.addWidget(self.date_from)
-        date_row.addWidget(_lbl("To:"))
         self.date_to = QDateEdit()
         self.date_to.setDate(QDate.currentDate())
         self.date_to.setCalendarPopup(True)
         self.date_to.setFixedHeight(30)
+        self.date_to.setEnabled(False)
         self.date_to.dateChanged.connect(self._load_list)
         date_row.addWidget(self.date_to)
+        date_row.addStretch()
         lay.addLayout(date_row)
 
         # Status filter
         self.status_combo = QComboBox()
-        self.status_combo.setFixedHeight(30)
+        self.status_combo.setFixedHeight(34)
         self.status_combo.setStyleSheet(COMBO_STYLE)
         self.status_combo.addItems(["All Statuses","Completed","Voided","Refunded"])
         self.status_combo.currentIndexChanged.connect(self._load_list)
@@ -159,20 +176,21 @@ class VoidRefundTab(QWidget):
         self.list_tbl.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.list_tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.list_tbl.verticalHeader().setVisible(False)
-        self.list_tbl.setAlternatingRowColors(True)
+        self.list_tbl.setAlternatingRowColors(False)
         self.list_tbl.setStyleSheet(f"""
-            QTableWidget{{background:{DARK_2};border:none;
-                alternate-background-color:{DARK};gridline-color:#333;}}
-            QTableWidget::item{{padding:6px;color:{WARM_WHITE};}}
-            QTableWidget::item:selected{{background:{AMBER};color:white;}}
+            QTableWidget{{background:{WHITE};border:none;
+                gridline-color:{BORDER_LIGHT};font-size:13px;font-weight:500;}}
+            QTableWidget::item{{padding:8px 12px;
+                border-bottom:1px solid {BORDER_LIGHT};color:{DARK_CARD};}}
+            QTableWidget::item:selected{{background:{AMBER_BG};color:{DARK_CARD};}}
             QHeaderView::section{{background:{DARK_CARD};color:{AMBER};
-                font-size:10px;font-weight:700;padding:6px;border:none;
+                font-size:12px;font-weight:700;padding:8px 12px;border:none;
                 border-right:1px solid #333;}}
         """)
         self.list_tbl.itemSelectionChanged.connect(self._on_receipt_selected)
         lay.addWidget(self.list_tbl, stretch=1)
 
-        self.list_count_lbl = _lbl("", MUTED, 10)
+        self.list_count_lbl = _lbl("", MUTED, 11)
         lay.addWidget(self.list_count_lbl)
         return w
 
@@ -203,20 +221,22 @@ class VoidRefundTab(QWidget):
         self.items_tbl.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self.items_tbl.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.items_tbl.verticalHeader().setVisible(False)
-        self.items_tbl.setAlternatingRowColors(True)
+        self.items_tbl.setAlternatingRowColors(False)
         self.items_tbl.setStyleSheet(f"""
             QTableWidget{{background:{WHITE};border:1px solid {BORDER};
-                border-radius:6px;alternate-background-color:{WARM_WHITE};
-                gridline-color:{BORDER};}}
-            QTableWidget::item{{padding:5px;color:{DARK_CARD};}}
+                border-radius:6px;gridline-color:{BORDER_LIGHT};
+                font-size:13px;font-weight:500;}}
+            QTableWidget::item{{padding:7px 10px;color:{DARK_CARD};
+                border-bottom:1px solid {BORDER_LIGHT};}}
             QHeaderView::section{{background:{DARK_CARD};color:{AMBER};
-                font-size:10px;font-weight:700;padding:5px;border:none;
+                font-size:11px;font-weight:700;padding:7px 10px;border:none;
                 border-right:1px solid #333;}}
         """)
         lay.addWidget(self.items_tbl, stretch=1)
 
         # Totals bar
-        self.totals_lbl = _lbl("", MUTED, 11)
+        self.totals_lbl = _lbl("", DARK_CARD, 12, bold=True)
+        self.totals_lbl.setAlignment(Qt.AlignmentFlag.AlignRight)
         lay.addWidget(self.totals_lbl)
 
         lay.addWidget(_div())
@@ -224,7 +244,7 @@ class VoidRefundTab(QWidget):
         # ── Action panel ──────────────────────────────────────────────
         self.action_frame = QFrame()
         self.action_frame.setStyleSheet(
-            f"background:{WARM_WHITE};border:1px solid {BORDER};border-radius:8px;"
+            f"background:{WARM_WHITE};border:1.5px solid {BORDER};border-radius:8px;"
         )
         af = QVBoxLayout(self.action_frame)
         af.setContentsMargins(14, 12, 14, 12)
@@ -234,7 +254,7 @@ class VoidRefundTab(QWidget):
         mode_row = QHBoxLayout(); mode_row.setSpacing(8)
         mode_row.addWidget(_lbl("Action:", bold=True))
         self.action_combo = QComboBox()
-        self.action_combo.setFixedHeight(32)
+        self.action_combo.setFixedHeight(34)
         self.action_combo.setStyleSheet(COMBO_STYLE)
         self.action_combo.addItems([
             "— Select Action —",
@@ -328,10 +348,15 @@ class VoidRefundTab(QWidget):
     # LIST
     # ═════════════════════════════════════════════════════════════════════
 
+    def _on_date_toggled(self, checked: bool):
+        self.date_from.setEnabled(checked)
+        self.date_to.setEnabled(checked)
+        self._load_list()
+
     def _load_list(self):
         search    = self.search_inp.text().strip()
-        date_from = self.date_from.date().toString("yyyy-MM-dd")
-        date_to   = self.date_to.date().toString("yyyy-MM-dd")
+        date_from = self.date_from.date().toString("yyyy-MM-dd") if self.date_chk.isChecked() else ""
+        date_to   = self.date_to.date().toString("yyyy-MM-dd") if self.date_chk.isChecked() else ""
         status_t  = self.status_combo.currentText()
         status    = None if status_t == "All Statuses" else status_t.lower()
 
