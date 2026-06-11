@@ -171,7 +171,9 @@ except Exception as e:
 fi
 
 ICO_PATH="$SCRIPT_DIR/assets/merchant_pos.ico"
-ICO_WIN=$(winepath -w "$ICO_PATH" 2>/dev/null || echo "Z:${ICO_PATH//\//\\}")
+ICO_WIN=$(winepath -w "$ICO_PATH" 2>/dev/null || echo "Z:\\${ICO_PATH//\//\\\\}")
+# Escape backslashes so they survive the heredoc expansion below
+ICO_WIN_ESC="${ICO_WIN//\\/\\\\}"
 
 # ── Step 6: Build hidden imports list ────────────────────────────────────────
 step "Generating PyInstaller spec"
@@ -249,7 +251,7 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    icon='${ICO_WIN}',
+    icon='${ICO_WIN_ESC}',
 )
 
 coll = COLLECT(
