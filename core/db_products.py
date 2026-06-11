@@ -160,6 +160,24 @@ def init_db():
         # ── Step 2: create any still-missing tables ────────────────────
         con.executescript(SCHEMA)
 
+        # ── Step 2b: ensure discount_levels table exists ───────────────
+        # This table was originally created only by migrate_db.py,
+        # but must be present on fresh installs too.
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS discount_levels (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                name             TEXT    NOT NULL DEFAULT '',
+                discount_percent REAL    NOT NULL DEFAULT 0.0,
+                min_quantity     INTEGER NOT NULL DEFAULT 1
+            )
+        """)
+        # Seed two default levels if the table is empty
+        if con.execute("SELECT COUNT(*) FROM discount_levels").fetchone()[0] == 0:
+            con.execute("INSERT INTO discount_levels (name, discount_percent, min_quantity) "
+                        "VALUES ('Level 1 - Bulk', 5.0, 6)")
+            con.execute("INSERT INTO discount_levels (name, discount_percent, min_quantity) "
+                        "VALUES ('Level 2 - Wholesale', 10.0, 12)")
+
         # ── Step 3: migrate groups table ──────────────────────────────
         gcols = {r[1] for r in con.execute("PRAGMA table_info(groups)")}
         if "profit_margin" not in gcols:
@@ -426,16 +444,17 @@ def delete_group(group_id: int):
 
 # ── Products ──────────────────────────────────────────────────────────────────
 
-def get_discount_levels() -> dict:
-    """Return all discount levels as {id: {min_qty, pct}}."""
+def get_discount_levels() -> list[dict]:
+    """Return all discount levels as a list of dicts, ordered by min_quantity."""
     with _conn() as con:
         try:
             rows = con.execute(
-                "SELECT id, min_quantity, discount_percent FROM discount_levels"
+                "SELECT id, name, min_quantity, discount_percent FROM discount_levels "
+                "ORDER BY min_quantity"
             ).fetchall()
-            return {r[0]: {"min_qty": r[1], "pct": r[2]} for r in rows}
+            return [dict(r) for r in rows]
         except Exception:
-            return {}
+            return []
 
 
 def get_products(search: str = "", group_id: int = None,

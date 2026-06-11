@@ -74,163 +74,180 @@ class _ImportWorker(QThread):
         skipped = 0
         errors  = 0
 
+        import sqlite3 as _sqlite3
+        from config import DB_PRODUCTS as _DB_PRODUCTS
         from core.db_products import (
             get_product_by_barcode, add_product, update_product,
-            get_groups, add_group, _conn as products_conn,
+            get_groups, add_group,
         )
         from core.db_config import get_bool, get as cfg_get
 
         track_stock = get_bool("stock_tracking", False)
 
-        # ── Group cache ───────────────────────────────────────────────
-        group_cache = {g["name"].upper(): g["id"] for g in get_groups()}
+        # ── Own connection for this worker thread ─────────────────────
+        # Using _conn (thread-local) from db_products is unsafe here
+        # because QThread recycles OS threads and stale thread-locals
+        # cause corrupted connection state on repeat imports.
+        # A fresh connection owned by this worker avoids that entirely.
+        _wcon = _sqlite3.connect(_DB_PRODUCTS, check_same_thread=False)
+        _wcon.row_factory = _sqlite3.Row
+        _wcon.execute("PRAGMA journal_mode=WAL")
+        _wcon.execute("PRAGMA foreign_keys=ON")
 
-        def _get_or_create_group(name: str) -> int | None:
-            if not name or not name.strip():
-                return None
-            key = name.strip().upper()
-            if key not in group_cache:
-                new_id = add_group(key)
-                if new_id:
-                    group_cache[key] = new_id
-            return group_cache.get(key)
+        try:
+            # ── Group cache ───────────────────────────────────────────
+            group_cache = {g["name"].upper(): g["id"] for g in get_groups()}
 
-        # ── Discount level cache ──────────────────────────────────────
-        # {(min_qty, rounded_pct): discount_level_id}
-        disc_cache = {}
-        with products_conn() as con:
-            for row in con.execute(
+            def _get_or_create_group(name: str):
+                if not name or not name.strip():
+                    return None
+                key = name.strip().upper()
+                if key not in group_cache:
+                    new_id = add_group(key)
+                    if new_id:
+                        group_cache[key] = new_id
+                return group_cache.get(key)
+
+            # ── Discount level cache ──────────────────────────────────
+            # {(min_qty, rounded_pct): discount_level_id}
+            disc_cache = {}
+            for row in _wcon.execute(
                 "SELECT id, min_quantity, discount_percent FROM discount_levels"
             ).fetchall():
-                key = (int(row[1]), round(float(row[2]), 1))
-                disc_cache[key] = row[0]
+                key = (int(row["min_quantity"]), round(float(row["discount_percent"]), 1))
+                disc_cache[key] = row["id"]
 
-        def _get_or_create_disc_level(min_qty: int, pct: float) -> int | None:
-            """Return discount level id for (min_qty, pct%), creating if needed."""
-            if min_qty <= 0 or pct <= 0:
-                return None
-            pct_r = round(pct, 1)
-            key   = (min_qty, pct_r)
-            if key not in disc_cache:
-                with products_conn() as con:
-                    name = f"Bulk {min_qty}+ ({pct_r}%)"
-                    cur  = con.execute(
+            def _get_or_create_disc_level(min_qty: int, pct: float):
+                """Return discount level id for (min_qty, pct%), creating if needed."""
+                if min_qty <= 0 or pct <= 0:
+                    return None
+                pct_r = round(pct, 1)
+                key   = (min_qty, pct_r)
+                if key not in disc_cache:
+                    label = f"Bulk {min_qty}+ ({pct_r}%)"
+                    cur   = _wcon.execute(
                         "INSERT INTO discount_levels (name, min_quantity, discount_percent) "
                         "VALUES (?,?,?)",
-                        (name, min_qty, pct_r)
+                        (label, min_qty, pct_r)
                     )
-                    con.commit()
+                    _wcon.commit()
                     disc_cache[key] = cur.lastrowid
-            return disc_cache[key]
+                return disc_cache[key]
 
-        # ── Main import loop ──────────────────────────────────────────
-        for i, rec in enumerate(records):
-            self.progress.emit(i + 1, total)
-            r = dict(rec)
+            # ── Main import loop ──────────────────────────────────────
+            for i, rec in enumerate(records):
+                self.progress.emit(i + 1, total)
+                r = dict(rec)
 
-            name    = (r.get("descrip") or "").strip()
-            barcode = str(r.get("code") or "").strip()
+                name    = (r.get("descrip") or "").strip()
+                barcode = str(r.get("code") or "").strip()
 
-            if not name or not barcode:
-                skipped += 1
-                self.row_done.emit({"name": name or "—", "barcode": barcode,
-                                    "status": "skipped", "reason": "Missing name or barcode"})
-                continue
+                if not name or not barcode:
+                    skipped += 1
+                    self.row_done.emit({"name": name or "—", "barcode": barcode,
+                                        "status": "skipped", "reason": "Missing name or barcode"})
+                    continue
 
-            price = float(r.get("price") or r.get("priceg") or 0)
-            cost  = float(r.get("cost") or 0)
-            gct   = bool(r.get("gct", False))
+                price = float(r.get("price") or r.get("priceg") or 0)
+                cost  = float(r.get("cost") or 0)
+                gct   = bool(r.get("gct", False))
 
-            # Group
-            group_raw = (r.get("group") or r.get("category") or "").strip()
-            group_id  = _get_or_create_group(group_raw) if opts.get("import_groups") else None
+                # Group
+                group_raw = (r.get("group") or r.get("category") or "").strip()
+                group_id  = _get_or_create_group(group_raw) if opts.get("import_groups") else None
 
-            # Discount levels — match or create
-            disc1_id = disc2_id = None
-            if opts.get("import_discounts"):
-                q1   = int(round(float(r.get("quan1") or 0)))
-                pct1 = float(r.get("percent1") or 0)
-                q2   = int(round(float(r.get("quan2") or 0)))
-                pct2 = float(r.get("percent2") or 0)
-                if q1 > 0 and pct1 > 0:
-                    disc1_id = _get_or_create_disc_level(q1, pct1)
-                if q2 > 0 and pct2 > 0:
-                    disc2_id = _get_or_create_disc_level(q2, pct2)
+                # Discount levels — match or create
+                disc1_id = disc2_id = None
+                if opts.get("import_discounts"):
+                    q1   = int(round(float(r.get("quan1") or 0)))
+                    pct1 = float(r.get("percent1") or 0)
+                    q2   = int(round(float(r.get("quan2") or 0)))
+                    pct2 = float(r.get("percent2") or 0)
+                    if q1 > 0 and pct1 > 0:
+                        disc1_id = _get_or_create_disc_level(q1, pct1)
+                    if q2 > 0 and pct2 > 0:
+                        disc2_id = _get_or_create_disc_level(q2, pct2)
 
-            existing = get_product_by_barcode(barcode)
+                existing = get_product_by_barcode(barcode)
 
-            kwargs = {}
-            if opts.get("import_price"):
-                kwargs["selling_price"] = price
-            if opts.get("import_cost") and cost > 0:
-                kwargs["cost"] = cost
-            if opts.get("import_gct"):
-                kwargs["gct_applicable"] = int(gct)
-            if opts.get("import_groups") and group_id:
-                kwargs["group_id"] = group_id
-            if opts.get("import_discounts"):
-                if disc1_id is not None:
-                    kwargs["discount_level1"] = disc1_id
-                if disc2_id is not None:
-                    kwargs["discount_level2"] = disc2_id
+                kwargs = {}
+                if opts.get("import_price"):
+                    kwargs["selling_price"] = price
+                if opts.get("import_cost") and cost > 0:
+                    kwargs["cost"] = cost
+                if opts.get("import_gct"):
+                    kwargs["gct_applicable"] = int(gct)
+                if opts.get("import_groups") and group_id:
+                    kwargs["group_id"] = group_id
+                if opts.get("import_discounts"):
+                    if disc1_id is not None:
+                        kwargs["discount_level1"] = disc1_id
+                    if disc2_id is not None:
+                        kwargs["discount_level2"] = disc2_id
 
+                try:
+                    if existing:
+                        if opts.get("update_existing"):
+                            kwargs["name"] = name
+                            update_product(existing["id"], **kwargs)
+                            if track_stock and opts.get("import_stock"):
+                                qty = float(r.get("quantity") or 0)
+                                if qty != 0:
+                                    from core.db_products import adjust_stock
+                                    adjust_stock(existing["id"], int(qty),
+                                                 "DBF import", user_id=None)
+                            updated += 1
+                            disc_note = f"  disc:{disc1_id}/{disc2_id}" if opts.get("import_discounts") else ""
+                            self.row_done.emit({"name": name, "barcode": barcode,
+                                                "status": "updated", "reason": disc_note.strip()})
+                        else:
+                            skipped += 1
+                            self.row_done.emit({"name": name, "barcode": barcode,
+                                                "status": "skipped",
+                                                "reason": "Already exists (update disabled)"})
+                    else:
+                        if opts.get("create_new"):
+                            new_id = add_product(
+                                barcode=barcode,
+                                name=name,
+                                cost=cost,
+                                selling_price=price,
+                                group_id=group_id,
+                                gct_applicable=int(gct),
+                                discount_level1=disc1_id,
+                                discount_level2=disc2_id,
+                            )
+                            if new_id and track_stock and opts.get("import_stock"):
+                                qty = float(r.get("quantity") or 0)
+                                if qty > 0:
+                                    from core.db_products import adjust_stock
+                                    adjust_stock(new_id, int(qty), "DBF import", user_id=None)
+                            created += 1
+                            self.row_done.emit({"name": name, "barcode": barcode,
+                                                "status": "created", "reason": ""})
+                        else:
+                            skipped += 1
+                            self.row_done.emit({"name": name, "barcode": barcode,
+                                                "status": "skipped",
+                                                "reason": "New product (create disabled)"})
+                except Exception as e:
+                    errors += 1
+                    self.row_done.emit({"name": name, "barcode": barcode,
+                                        "status": "error", "reason": str(e)})
+
+            self.finished.emit({
+                "total":   total,
+                "created": created,
+                "updated": updated,
+                "skipped": skipped,
+                "errors":  errors,
+            })
+
+        finally:
             try:
-                if existing:
-                    if opts.get("update_existing"):
-                        kwargs["name"] = name
-                        update_product(existing["id"], **kwargs)
-                        if track_stock and opts.get("import_stock"):
-                            qty = float(r.get("quantity") or 0)
-                            if qty != 0:
-                                from core.db_products import adjust_stock
-                                adjust_stock(existing["id"], int(qty),
-                                             "DBF import", user_id=None)
-                        updated += 1
-                        disc_note = f"  disc:{disc1_id}/{disc2_id}" if opts.get("import_discounts") else ""
-                        self.row_done.emit({"name": name, "barcode": barcode,
-                                            "status": "updated", "reason": disc_note.strip()})
-                    else:
-                        skipped += 1
-                        self.row_done.emit({"name": name, "barcode": barcode,
-                                            "status": "skipped",
-                                            "reason": "Already exists (update disabled)"})
-                else:
-                    if opts.get("create_new"):
-                        new_id = add_product(
-                            barcode=barcode,
-                            name=name,
-                            cost=cost,
-                            selling_price=price,
-                            group_id=group_id,
-                            gct_applicable=int(gct),
-                            discount_level1=disc1_id,
-                            discount_level2=disc2_id,
-                        )
-                        if new_id and track_stock and opts.get("import_stock"):
-                            qty = float(r.get("quantity") or 0)
-                            if qty > 0:
-                                from core.db_products import adjust_stock
-                                adjust_stock(new_id, int(qty), "DBF import", user_id=None)
-                        created += 1
-                        self.row_done.emit({"name": name, "barcode": barcode,
-                                            "status": "created", "reason": ""})
-                    else:
-                        skipped += 1
-                        self.row_done.emit({"name": name, "barcode": barcode,
-                                            "status": "skipped",
-                                            "reason": "New product (create disabled)"})
-            except Exception as e:
-                errors += 1
-                self.row_done.emit({"name": name, "barcode": barcode,
-                                    "status": "error", "reason": str(e)})
-
-        self.finished.emit({
-            "total":   total,
-            "created": created,
-            "updated": updated,
-            "skipped": skipped,
-            "errors":  errors,
-        })
+                _wcon.close()
+            except Exception:
+                pass
 
 
 # ── DBFImportTab ──────────────────────────────────────────────────────────────

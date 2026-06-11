@@ -747,12 +747,14 @@ class SupervisorWindow(BaseWindow):
     def _populate_discount_levels(self, combo):
         combo.clear(); combo.addItem("— None —", None)
         try:
-            import sqlite3; from config import DB_PRODUCTS
-            con = sqlite3.connect(DB_PRODUCTS)
-            for r in con.execute("SELECT id,name,discount_percent,min_quantity FROM discount_levels ORDER BY min_quantity").fetchall():
-                combo.addItem(f"{r[1]}  ({r[2]}% off, min qty {r[3]})", r[0])
-            con.close()
-        except: pass
+            from core.db_products import get_discount_levels
+            for lvl in get_discount_levels():
+                combo.addItem(
+                    f"{lvl['name']}  ({lvl['discount_percent']}% off, min qty {lvl['min_quantity']})",
+                    lvl["id"]
+                )
+        except Exception:
+            pass
 
 
     # ================================================================
