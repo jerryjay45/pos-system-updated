@@ -134,8 +134,7 @@ $WINE_PIP install "PyQt6==6.11.0" --quiet 2>/dev/null
 
 info "Installing application dependencies..."
 $WINE_PIP install \
-    python-barcode \
-    Pillow \
+    dbfread \
     python-escpos \
     pyserial \
     pyusb \
@@ -216,8 +215,9 @@ for pkg in ['core', 'ui', 'utils']:
 
 # Extra runtime dependencies
 hiddenimports += [
-    'barcode', 'barcode.writer', 'PIL', 'PIL.Image',
+    'dbfread', 'dbfread.dbf', 'dbfread.field_parser',
     'serial', 'usb', 'psycopg2',
+    'escpos', 'escpos.printer',
     $HIDDEN,
 ]
 
