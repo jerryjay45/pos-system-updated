@@ -426,6 +426,18 @@ def delete_group(group_id: int):
 
 # ── Products ──────────────────────────────────────────────────────────────────
 
+def get_discount_levels() -> dict:
+    """Return all discount levels as {id: {min_qty, pct}}."""
+    with _conn() as con:
+        try:
+            rows = con.execute(
+                "SELECT id, min_quantity, discount_percent FROM discount_levels"
+            ).fetchall()
+            return {r[0]: {"min_qty": r[1], "pct": r[2]} for r in rows}
+        except Exception:
+            return {}
+
+
 def get_products(search: str = "", group_id: int = None,
                  limit: int = 100, offset: int = 0,
                  exclude_cases: bool = False) -> list[dict]:

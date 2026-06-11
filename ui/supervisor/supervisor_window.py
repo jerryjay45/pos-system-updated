@@ -98,6 +98,7 @@ class SupervisorWindow(BaseWindow):
         self._void_refund_tab = VoidRefundTab(user=self.user, parent=self)
         self.tabs.addTab(self._void_refund_tab, "↩  Void / Refund")
         self.tabs.addTab(self._build_stock_tab(),        "📊  Stock")
+        self.tabs.addTab(self._build_price_tag_tab(),    "🏷  Price Tags")
         self.tabs.addTab(self._build_quickkeys_tab(),    "⌨  Quick Keys")
         self.tabs.setCurrentIndex(0)
         return self.tabs
@@ -1546,6 +1547,10 @@ class SupervisorWindow(BaseWindow):
     def _build_stock_tab(self):
         from ui.supervisor.stock_tab import StockTab
         return StockTab(self.user, parent=self)
+
+    def _build_price_tag_tab(self):
+        from ui.supervisor.price_tag_tab import PriceTagTab
+        return PriceTagTab(self.user, parent=self)
 
     def _build_quickkeys_tab(self):
         w = QWidget(); w.setStyleSheet(f"background:{WARM_WHITE};")
