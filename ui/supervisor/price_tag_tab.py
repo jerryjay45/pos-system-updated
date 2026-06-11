@@ -534,7 +534,7 @@ class PriceTagTab(QWidget):
         self._all_prods = products
 
         # Build discount tier lookup
-        disc_levels = get_discount_levels()   # {id: {min_qty, pct, ...}}
+        disc_levels = {d["id"]: d for d in get_discount_levels()}  # {id: row_dict}
         currency    = cfg_get("currency_symbol", "$")
         gct_r       = gct_rate()
 
@@ -588,8 +588,8 @@ class PriceTagTab(QWidget):
                 lid = p.get(key)
                 if lid and lid in disc_levels:
                     dl  = disc_levels[lid]
-                    qty = dl.get("min_qty") or 0
-                    pct = dl.get("pct") or 0.0
+                    qty = dl.get("min_quantity") or 0
+                    pct = dl.get("discount_percent") or 0.0
                     if qty and pct:
                         disc_price = round(p["selling_price"] * (1 - pct / 100), 2)
                         pct_str    = f"{pct:.0f}%"

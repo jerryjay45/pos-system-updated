@@ -893,32 +893,28 @@ class ManagerWindow(SupervisorWindow):
 
     def _load_discount_levels(self):
         try:
-            from core.db_products import get_discount_levels
-            rows = get_discount_levels()  # list of dicts ordered by min_quantity
-            for i, lvl in enumerate(rows[:2]):
+            import sqlite3; from config import DB_PRODUCTS
+            con = sqlite3.connect(DB_PRODUCTS)
+            rows = con.execute("SELECT discount_percent, min_quantity FROM discount_levels ORDER BY min_quantity LIMIT 2").fetchall()
+            con.close()
+            for i, (pct, qty) in enumerate(rows):
                 if i < len(self._disc_rows):
-                    self._disc_rows[i][0].setValue(float(lvl["discount_percent"]))
-                    self._disc_rows[i][1].setValue(int(lvl["min_quantity"]))
-        except Exception:
-            pass
+                    self._disc_rows[i][0].setValue(pct)
+                    self._disc_rows[i][1].setValue(qty)
+        except Exception: pass
 
     def _save_discount_levels(self):
         try:
-            from core.db_products import get_discount_levels
             import sqlite3; from config import DB_PRODUCTS
             con = sqlite3.connect(DB_PRODUCTS)
-            rows = get_discount_levels()  # list of dicts ordered by min_quantity
-            for i, lvl in enumerate(rows[:2]):
+            rows = con.execute("SELECT id FROM discount_levels ORDER BY min_quantity LIMIT 2").fetchall()
+            for i, (did,) in enumerate(rows):
                 if i < len(self._disc_rows):
                     pct = self._disc_rows[i][0].value()
                     qty = self._disc_rows[i][1].value()
-                    con.execute(
-                        "UPDATE discount_levels SET discount_percent=?, min_quantity=? WHERE id=?",
-                        (pct, qty, lvl["id"])
-                    )
+                    con.execute("UPDATE discount_levels SET discount_percent=?, min_quantity=? WHERE id=?", (pct, qty, did))
             con.commit(); con.close()
-        except Exception:
-            pass
+        except Exception: pass
 
     def _load_groups(self):
         self.groups_table.setRowCount(0)
@@ -953,7 +949,15 @@ class ManagerWindow(SupervisorWindow):
 
     def _build_dbf_import_tab(self):
         from ui.manager.dbf_import_tab import DBFImportTab
-        return DBFImportTab(self.user, parent=self)
+        tab = DBFImportTab(self.user, parent=self)
+        tab.import_complete.connect(self._on_import_complete)
+        return tab
+
+    def _on_import_complete(self):
+        """Refresh groups and discount combos in the Products form after a DBF import."""
+        self._populate_groups()
+        self._populate_discount_levels(self.f_disc1)
+        self._populate_discount_levels(self.f_disc2)
 
     def _build_quickkeys_tab(self):
         w = QWidget(); w.setStyleSheet(f"background:{WARM_WHITE};")
