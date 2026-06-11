@@ -194,6 +194,7 @@ class ManagerWindow(SupervisorWindow):
         self.tabs.addTab(self._build_stock_tab(),        "📊  Stock")
         self.tabs.addTab(self._build_price_tag_tab(),    "🏷  Price Tags")
         self.tabs.addTab(self._build_quickkeys_tab(),    "⌨  Quick Keys")
+        self.tabs.addTab(self._build_dbf_import_tab(),   "📥  Import")
         self.tabs.setCurrentIndex(0)
         return self.tabs
 
@@ -945,6 +946,10 @@ class ManagerWindow(SupervisorWindow):
             delete_group(gid); self._load_groups()
 
 
+
+    def _build_dbf_import_tab(self):
+        from ui.manager.dbf_import_tab import DBFImportTab
+        return DBFImportTab(self.user, parent=self)
 
     def _build_quickkeys_tab(self):
         w = QWidget(); w.setStyleSheet(f"background:{WARM_WHITE};")
