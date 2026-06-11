@@ -159,16 +159,17 @@ class SupervisorWindow(BaseWindow):
         self.product_table = QTableWidget()
         self.product_table.setColumnCount(6)
         self.product_table.setHorizontalHeaderLabels(
-            ["Name", "Barcode", "Cost", "Group", "Tags", "Actions"])
+            ["Name", "Barcode", "Cost", "Price", "Tags", "Actions"])
         hh = self.product_table.horizontalHeader()
-        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)          # Name — takes remaining space
-        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents) # Barcode — auto
-        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)            # Cost
-        self.product_table.setColumnWidth(2, 72)
-        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents) # Group — auto
-        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)            # Tags
-        self.product_table.setColumnWidth(4, 72)
-        hh.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)            # Actions
+        hh.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        self.product_table.setColumnWidth(2, 80)
+        hh.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        self.product_table.setColumnWidth(3, 80)
+        hh.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.product_table.setColumnWidth(4, 80)
+        hh.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         self.product_table.setColumnWidth(5, 110)
         self.product_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.product_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -416,7 +417,7 @@ class SupervisorWindow(BaseWindow):
             self.product_table.setItem(row, 0, cell(p["name"]))
             self.product_table.setItem(row, 1, cell(p["barcode"], MUTED))
             self.product_table.setItem(row, 2, cell(f"${p['cost']:.2f}", AMBER_DARK, R))
-            self.product_table.setItem(row, 3, cell(p.get("group_name") or "—", LABEL_TEXT, C))
+            self.product_table.setItem(row, 3, cell(f"${p['selling_price']:.2f}", GREEN, R))
             self.product_table.setItem(row, 4, cell(tags_str, tags_color, C))
             act = QWidget(); al = QHBoxLayout(act)
             al.setContentsMargins(4, 2, 4, 2); al.setSpacing(4)
