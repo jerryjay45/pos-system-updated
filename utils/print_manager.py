@@ -41,39 +41,64 @@ def _save_text(filename: str, text: str):
         print(f"[PrintManager] Could not save text copy: {e}")
 
 
-def _send_to_printer(text: str, parent=None) -> bool:
+def _send_to_printer(text: str, parent=None,
+                     show_dialog: bool = False) -> bool:
     """
-    Send text to the configured thermal printer.
-    Returns True on success, False if no printer or on error.
-    Shows a user-friendly error dialog if parent is provided.
+    Send text to the configured printer.
+
+    Routing priority:
+      1. Normal (A4) printer  — if normal_printer_name is set
+      2. Thermal printer      — if thermal_printer_name is set
+      3. Silent success       — if neither is configured (text saved to file)
+
+    show_dialog=True opens the OS print dialog (used for reprints).
+    Returns True on success, False on error.
     """
+    from core.db_config import get as cfg_get
+    normal_name  = cfg_get("normal_printer_name",  "").strip()
+    thermal_name = cfg_get("thermal_printer_name", "").strip()
+
+    # ── Normal (A4) printer path ──────────────────────────────────────
+    if normal_name or show_dialog:
+        try:
+            from utils.normal_printer import print_text_normal
+            ok, err = print_text_normal(text, show_dialog=show_dialog, parent=parent)
+            if not ok and err != "Print cancelled":
+                _warn_parent(parent, normal_name, err)
+            return ok
+        except Exception as e:
+            _warn_parent(parent, normal_name, str(e))
+            return False
+
+    # ── Thermal printer path ──────────────────────────────────────────
     from utils.thermal_printer import ThermalPrinter, PrinterError
     printer = ThermalPrinter.from_config()
 
     if not printer.is_configured:
-        # No printer set — silent success (text already saved)
-        return True
+        return True   # No printer set — silent success, text already saved
 
     try:
         with printer as p:
             p.print_text(text)
             p.cut()
         return True
-
     except PrinterError as e:
-        print(f"[PrintManager] Printer error: {e}")
-        if parent:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(
-                parent, "Printer Error",
-                f"Could not print to '{printer._name}'.\n\n{e}\n\n"
-                f"A text copy has been saved to the receipts folder."
-            )
+        _warn_parent(parent, thermal_name, str(e),
+                     extra="A text copy has been saved to the receipts folder.")
         return False
-
     except Exception as e:
         print(f"[PrintManager] Unexpected print error: {e}")
         return False
+
+
+def _warn_parent(parent, printer_name: str, error: str, extra: str = ""):
+    print(f"[PrintManager] Printer error ({printer_name}): {error}")
+    if parent:
+        from PyQt6.QtWidgets import QMessageBox
+        msg = f"Could not print to '{printer_name}'.\n\n{error}"
+        if extra:
+            msg += f"\n\n{extra}"
+        QMessageBox.warning(parent, "Printer Error", msg)
 
 
 def _stamp() -> str:
@@ -231,8 +256,15 @@ def reprint_receipt(receipt_number: str, parent=None) -> bool:
                 QMessageBox.warning(parent, "Not Found",
                     f"Receipt {receipt_number} not found.")
             return False
-        return print_receipt(receipt, parent)
-
+        try:
+            from utils.receipt_formatter import format_sale
+            biz, currency = _get_biz_and_currency()
+            text = format_sale(receipt, biz, currency)
+            _save_text(f"receipt_{_safe_num(receipt['receipt_number'])}_{_stamp()}.txt", text)
+            return _send_to_printer(text, parent, show_dialog=True)
+        except Exception as e:
+            print(f"[PrintManager] reprint format error: {e}")
+            return False
     except Exception as e:
         print(f"[PrintManager] reprint_receipt error: {e}")
         return False
