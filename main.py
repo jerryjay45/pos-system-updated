@@ -19,7 +19,7 @@ from core import init_all_databases
 init_all_databases()
 
 # High-DPI policy MUST be set before QApplication is created
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QDialog
 from PyQt6.QtCore    import Qt, pyqtSignal, QObject
 
 # App-level signal bus — lets supervisor broadcast session closure to cashier windows
@@ -59,6 +59,13 @@ def main():
     from core.db_config import get as cfg_get
     apply_theme(cfg_get("theme", "amber"))
     app.setStyleSheet(get_stylesheet())
+
+    # Show setup wizard on first run (no manager account exists)
+    from ui.setup_wizard import SetupWizard
+    if SetupWizard.needs_setup():
+        wizard = SetupWizard()
+        if wizard.exec() != QDialog.DialogCode.Accepted:
+            sys.exit(0)   # user closed wizard without completing
 
     # Show login window
     from ui.login_window import LoginWindow
