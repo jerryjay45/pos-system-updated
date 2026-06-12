@@ -52,11 +52,6 @@ A full-featured, open-source Point of Sale application for retail businesses, bu
 
 ---
 
-## Screenshots
-
-> *(Add screenshots here)*
-
----
 
 ## Architecture
 
