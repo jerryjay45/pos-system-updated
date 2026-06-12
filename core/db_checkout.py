@@ -106,17 +106,28 @@ def init_db():
 # ── Receipt number generator ──────────────────────────────────────────────────
 
 def _next_receipt_number(con) -> str:
+    """Generate next receipt number using terminal ID prefix e.g. T01-0042."""
+    try:
+        from core.db_config import get as cfg_get
+        tid = cfg_get("terminal_id", "T01").strip().upper() or "T01"
+    except Exception:
+        tid = "T01"
+
+    prefix = f"{tid}-"
     row = con.execute(
-        "SELECT receipt_number FROM receipts ORDER BY id DESC LIMIT 1"
+        "SELECT receipt_number FROM receipts WHERE receipt_number LIKE ? "
+        "ORDER BY id DESC LIMIT 1",
+        (f"{prefix}%",)
     ).fetchone()
+
     if row:
         try:
-            num = int(row["receipt_number"].lstrip("#")) + 1
-        except ValueError:
+            num = int(row["receipt_number"].split("-")[-1]) + 1
+        except (ValueError, IndexError):
             num = 1
     else:
         num = 1
-    return f"#{num:04d}"
+    return f"{prefix}{num:04d}"
 
 
 # ── Receipts ──────────────────────────────────────────────────────────────────
