@@ -246,6 +246,7 @@ class DBFImportTab(QWidget):
         self._file   = ""
         self.setStyleSheet(f"background:{WARM_WHITE};")
         self._build()
+        self._load_remembered_folder()
 
     def _build(self):
         root = QVBoxLayout(self)
@@ -264,7 +265,7 @@ class DBFImportTab(QWidget):
             f"QLineEdit{{background:{WHITE};color:{MUTED};border:1px solid {BORDER};"
             f"border-radius:7px;padding:0 10px;font-size:12px;}}"
         )
-        browse = self._accent_btn("📂  Browse")
+        browse = self._accent_btn("📂  Select Folder")
         browse.setFixedWidth(120)
         browse.clicked.connect(self._browse)
         file_row.addWidget(self.file_lbl, stretch=1)
@@ -400,20 +401,67 @@ class DBFImportTab(QWidget):
 
     # ── File browsing ─────────────────────────────────────────────────────────
 
+    def _find_stock_dbf(self, folder: str) -> str | None:
+        """Return the path to stock.dbf in folder, case-insensitive, or None."""
+        try:
+            for entry in os.scandir(folder):
+                if entry.name.lower() == "stock.dbf" and entry.is_file():
+                    return entry.path
+        except OSError:
+            pass
+        return None
+
+    def _load_remembered_folder(self):
+        """On init, check if the saved folder still has stock.dbf and pre-load it."""
+        try:
+            from core.db_config import get as cfg_get
+            folder = cfg_get("dbf_import_folder", "")
+            if folder and os.path.isdir(folder):
+                path = self._find_stock_dbf(folder)
+                if path:
+                    self._set_file(path)
+        except Exception:
+            pass
+
     def _browse(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select DBF Stock File", "",
-            "DBF Files (*.dbf *.DBF);;All Files (*)"
+        # Start in the last-used folder if it still exists
+        try:
+            from core.db_config import get as cfg_get
+            start = cfg_get("dbf_import_folder", "")
+            if not start or not os.path.isdir(start):
+                start = ""
+        except Exception:
+            start = ""
+
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Folder Containing stock.dbf", start
         )
-        if not path:
+        if not folder:
             return
+
+        path = self._find_stock_dbf(folder)
+        if not path:
+            self.file_info.setText("⚠  No stock.dbf found in that folder.")
+            self.file_info.setStyleSheet(f"color:{RED};font-size:11px;")
+            return
+
+        # Save folder for next time
+        try:
+            from core.db_config import set as cfg_set
+            cfg_set("dbf_import_folder", folder)
+        except Exception:
+            pass
+
+        self._set_file(path)
+
+    def _set_file(self, path: str):
+        """Load a DBF file path into the UI."""
         self._file = path
-        self.file_lbl.setText(os.path.basename(path))
+        self.file_lbl.setText(path)
         self.file_lbl.setStyleSheet(
             f"QLineEdit{{background:{WHITE};color:{DARK_CARD};border:1px solid {AMBER};"
             f"border-radius:7px;padding:0 10px;font-size:12px;}}"
         )
-        # Read file info
         try:
             from dbfread import DBF
             table = DBF(path, lowernames=True, ignore_missing_memofile=True)
