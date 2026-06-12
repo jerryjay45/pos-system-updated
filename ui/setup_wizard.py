@@ -30,12 +30,16 @@ from ui.shared.theme import (
 
 # ── Shared style helpers ──────────────────────────────────────────────────────
 
-def _input(placeholder="", password=False, h=38):
+def _input(placeholder="", password=False, h=38, uppercase=True):
     inp = QLineEdit()
     inp.setPlaceholderText(placeholder)
     inp.setFixedHeight(h)
     if password:
         inp.setEchoMode(QLineEdit.EchoMode.Password)
+    elif uppercase:
+        inp.textChanged.connect(
+            lambda t: inp.setText(t.upper()) if t != t.upper() else None
+        )
     inp.setStyleSheet(
         f"QLineEdit{{background:{WHITE};color:{DARK_CARD};"
         f"border:1px solid {BORDER};border-radius:8px;"
@@ -139,7 +143,11 @@ class _BusinessPage(QWidget):
             f"border:1px solid {BORDER};border-radius:8px;padding:8px;}}"
             f"QTextEdit:focus{{border-color:{AMBER};}}"
         )
-        self.footer.setPlainText("Thank you for your business!")
+        self.footer.setPlainText("Thank you for your business!".upper())
+        self.footer.textChanged.connect(
+            lambda: self.footer.setPlainText(self.footer.toPlainText().upper())
+            if self.footer.toPlainText() != self.footer.toPlainText().upper() else None
+        )
         lay.addWidget(self.footer)
         lay.addStretch()
 
@@ -172,7 +180,7 @@ class _TaxPage(QWidget):
 
         # Currency symbol
         lay.addWidget(_field_label("Currency Symbol"))
-        self.currency = _input("e.g. $  or  J$")
+        self.currency = _input("e.g. $  or  J$", uppercase=False)
         self.currency.setText("$")
         lay.addWidget(self.currency)
 
@@ -291,7 +299,7 @@ class _PrinterPage(QWidget):
 
         # Receipt printer
         lay.addWidget(_field_label("Receipt Printer"))
-        self.thermal = _input("e.g. 192.168.1.100  or  /dev/usb/lp0  or  USB001")
+        self.thermal = _input("e.g. 192.168.1.100  or  /dev/usb/lp0  or  USB001", uppercase=False)
         lay.addWidget(self.thermal)
         hint1 = QLabel(
             "Enter an IP address for network printers, a device path for USB/serial,\n"

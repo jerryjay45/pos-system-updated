@@ -86,7 +86,7 @@ def _verify_password(password: str, stored: str) -> bool:
 # ── Init ──────────────────────────────────────────────────────────────────────
 
 def init_db():
-    """Create tables and seed a default manager account if none exists."""
+    """Create tables. First manager account is created by the setup wizard."""
     with _conn() as con:
         con.executescript(SCHEMA)
         # Migrate existing sessions table — add columns if missing
@@ -95,14 +95,6 @@ def init_db():
             con.execute("ALTER TABLE sessions ADD COLUMN opened_by INTEGER DEFAULT NULL")
         if "closed_by" not in cols:
             con.execute("ALTER TABLE sessions ADD COLUMN closed_by INTEGER DEFAULT NULL")
-        # Seed default manager only on first run
-        if con.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
-            con.execute(
-                "INSERT INTO users (full_name, username, password_hash, role) "
-                "VALUES (?, ?, ?, ?)",
-                ("ADMIN MANAGER", "MANAGER",
-                 _hash_password("ADMIN"), "manager")
-            )
         con.commit()
 
 
