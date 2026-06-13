@@ -44,25 +44,51 @@ def _save_text(filename: str, text: str):
 def _send_to_printer(text: str, parent=None,
                      show_dialog: bool = False) -> bool:
     """
-    Send text to the configured printer.
+    Route text to the configured printer.
 
-    Routing priority:
-      1. Normal (A4) printer  — if normal_printer_name is set
-      2. Thermal printer      — if thermal_printer_name is set
-      3. Silent success       — if neither is configured (text saved to file)
-
-    show_dialog=True opens the OS print dialog (used for reprints).
-    Returns True on success, False on error.
+    - If thermal_printer_name is set → thermal path
+    - If normal_printer_name is set  → normal (A4) path
+    - If both set                    → thermal takes priority for auto-print;
+                                       normal used only for reprints (show_dialog=True)
+    - If neither set                 → silent success (text saved to file only)
     """
     from core.db_config import get as cfg_get
-    normal_name  = cfg_get("normal_printer_name",  "").strip()
     thermal_name = cfg_get("thermal_printer_name", "").strip()
+    normal_name  = cfg_get("normal_printer_name",  "").strip()
 
-    # ── Normal (A4) printer path ──────────────────────────────────────
-    if normal_name or show_dialog:
+    # Reprints always use the OS print dialog regardless of which printer is set
+    if show_dialog:
         try:
             from utils.normal_printer import print_text_normal
-            ok, err = print_text_normal(text, show_dialog=show_dialog, parent=parent)
+            ok, err = print_text_normal(text, show_dialog=True, parent=parent)
+            if not ok and err != "Print cancelled":
+                _warn_parent(parent, "Printer", err)
+            return ok
+        except Exception as e:
+            _warn_parent(parent, "Printer", str(e))
+            return False
+
+    # Auto-print — prefer thermal, fall back to normal
+    if thermal_name:
+        from utils.thermal_printer import ThermalPrinter, PrinterError
+        printer = ThermalPrinter.from_config()
+        try:
+            with printer as p:
+                p.print_text(text)
+                p.cut()
+            return True
+        except PrinterError as e:
+            _warn_parent(parent, thermal_name, str(e),
+                         extra="A text copy has been saved to the receipts folder.")
+            return False
+        except Exception as e:
+            print(f"[PrintManager] Unexpected print error: {e}")
+            return False
+
+    if normal_name:
+        try:
+            from utils.normal_printer import print_text_normal
+            ok, err = print_text_normal(text, show_dialog=False, parent=parent)
             if not ok and err != "Print cancelled":
                 _warn_parent(parent, normal_name, err)
             return ok
@@ -70,25 +96,8 @@ def _send_to_printer(text: str, parent=None,
             _warn_parent(parent, normal_name, str(e))
             return False
 
-    # ── Thermal printer path ──────────────────────────────────────────
-    from utils.thermal_printer import ThermalPrinter, PrinterError
-    printer = ThermalPrinter.from_config()
-
-    if not printer.is_configured:
-        return True   # No printer set — silent success, text already saved
-
-    try:
-        with printer as p:
-            p.print_text(text)
-            p.cut()
-        return True
-    except PrinterError as e:
-        _warn_parent(parent, thermal_name, str(e),
-                     extra="A text copy has been saved to the receipts folder.")
-        return False
-    except Exception as e:
-        print(f"[PrintManager] Unexpected print error: {e}")
-        return False
+    # No printer configured — silent success
+    return True
 
 
 def _warn_parent(parent, printer_name: str, error: str, extra: str = ""):
@@ -246,7 +255,7 @@ def print_session(session: dict, report_type: str = "full",
 
 
 def reprint_receipt(receipt_number: str, parent=None) -> bool:
-    """Reprint any past receipt by receipt number (e.g. '#0041')."""
+    """Reprint any past receipt — shows OS print dialog to pick printer."""
     try:
         from core.db_checkout import get_receipt_by_number
         receipt = get_receipt_by_number(receipt_number)

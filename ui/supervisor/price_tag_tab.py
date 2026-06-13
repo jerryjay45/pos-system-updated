@@ -85,11 +85,11 @@ def _draw_label(painter: QPainter, rect: QRectF,
     px_per_mm = w / max(w_mm, 1)
 
     # Font sizes in points — proportional to label height in mm
-    name_pt   = max(h_mm * 0.20, 5.0)
-    price_pt  = max(h_mm * 0.38, 7.0)
-    gct_pt    = max(h_mm * 0.18, 4.5)
-    disc_pt   = max(h_mm * 0.22, 6.0)
-    bc_num_pt = max(h_mm * 0.10, 3.5)
+    name_pt   = max(h_mm * 0.38, 7.0)
+    price_pt  = max(h_mm * 0.55, 10.0)
+    gct_pt    = max(h_mm * 0.28, 5.5)
+    disc_pt   = max(h_mm * 0.32, 6.5)
+    bc_num_pt = max(h_mm * 0.14, 4.0)
 
     pad = max(2.0 * px_per_mm, 2.0)
 

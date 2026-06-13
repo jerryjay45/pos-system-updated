@@ -128,8 +128,37 @@ class _ImportWorker(QThread):
             self.progress.emit(i + 1, total)
             r = dict(rec)
 
-            name    = (r.get("descrip") or "").strip()
-            barcode = str(r.get("code") or "").strip()
+            # ── Field name variants ───────────────────────────────────
+            # Different DBF exports use different column names for the
+            # same concept. Try each known variant in priority order.
+
+            def _f(*keys):
+                """Return first non-empty string value from r matching any key."""
+                for k in keys:
+                    v = r.get(k)
+                    if v is not None and str(v).strip():
+                        return str(v).strip()
+                return ""
+
+            def _n(*keys):
+                """Return first non-zero numeric value from r matching any key."""
+                for k in keys:
+                    v = r.get(k)
+                    try:
+                        f = float(v)
+                        if f:
+                            return f
+                    except (TypeError, ValueError):
+                        pass
+                return 0.0
+
+            name = _f("descrip", "description", "itemname", "item_name",
+                      "prodname", "product_name", "name", "desc", "longdesc",
+                      "longname", "stockname", "stockdesc", "stk_desc")
+
+            barcode = _f("code", "barcode", "bar_code", "sku", "itemcode",
+                         "item_code", "plu", "upc", "ean", "product_code",
+                         "prod_code", "stockcode", "stk_code", "ref")
 
             if not name or not barcode:
                 skipped += 1
@@ -137,21 +166,35 @@ class _ImportWorker(QThread):
                                     "status": "skipped", "reason": "Missing name or barcode"})
                 continue
 
-            price = float(r.get("price") or r.get("priceg") or 0)
-            cost  = float(r.get("cost") or 0)
-            gct   = bool(r.get("gct", False))
+            price = _n("price", "priceg", "sell_price", "selling_price",
+                       "retail", "retail_price", "unitprice", "unit_price",
+                       "saleprice", "sale_price")
+            cost  = _n("cost", "costprice", "cost_price", "buyprice",
+                       "buy_price", "purchase_price", "landedcost", "wholesale")
+            gct_raw = r.get("gct") or r.get("tax") or r.get("vat") or \
+                      r.get("taxable") or r.get("gct_applicable") or False
+            try:
+                gct = bool(int(gct_raw))
+            except (TypeError, ValueError):
+                gct = str(gct_raw).strip().upper() in ("Y", "YES", "TRUE", "1", "T")
 
             # Group
-            group_raw = (r.get("group") or r.get("category") or "").strip()
+            group_raw = _f("group", "category", "dept", "department",
+                           "groupname", "group_name", "cat", "section",
+                           "division", "class")
             group_id  = _get_or_create_group(group_raw) if opts.get("import_groups") else None
 
             # Discount levels — match or create
             disc1_id = disc2_id = None
             if opts.get("import_discounts"):
-                q1   = int(round(float(r.get("quan1") or 0)))
-                pct1 = float(r.get("percent1") or 0)
-                q2   = int(round(float(r.get("quan2") or 0)))
-                pct2 = float(r.get("percent2") or 0)
+                q1   = int(round(_n("quan1", "qty1", "minqty1", "min_qty1",
+                                    "disc1qty", "breakqty1", "quantity1")))
+                pct1 = _n("percent1", "pct1", "disc1", "discount1",
+                          "discpct1", "disc_pct1", "break1pct")
+                q2   = int(round(_n("quan2", "qty2", "minqty2", "min_qty2",
+                                    "disc2qty", "breakqty2", "quantity2")))
+                pct2 = _n("percent2", "pct2", "disc2", "discount2",
+                          "discpct2", "disc_pct2", "break2pct")
                 if q1 > 0 and pct1 > 0:
                     disc1_id = _get_or_create_disc_level(q1, pct1)
                 if q2 > 0 and pct2 > 0:
@@ -180,7 +223,7 @@ class _ImportWorker(QThread):
                         kwargs["name"] = name
                         update_product(existing["id"], **kwargs)
                         if track_stock and opts.get("import_stock"):
-                            qty = float(r.get("quantity") or 0)
+                            qty = _n("quantity", "qty", "onhand", "on_hand", "stock", "stockqty", "qtyonhand", "instock")
                             if qty != 0:
                                 from core.db_products import adjust_stock
                                 adjust_stock(existing["id"], int(qty),
@@ -207,7 +250,7 @@ class _ImportWorker(QThread):
                             discount_level2=disc2_id,
                         )
                         if new_id and track_stock and opts.get("import_stock"):
-                            qty = float(r.get("quantity") or 0)
+                            qty = _n("quantity", "qty", "onhand", "on_hand", "stock", "stockqty", "qtyonhand", "instock")
                             if qty > 0:
                                 from core.db_products import adjust_stock
                                 adjust_stock(new_id, int(qty), "DBF import", user_id=None)
@@ -246,7 +289,6 @@ class DBFImportTab(QWidget):
         self._file   = ""
         self.setStyleSheet(f"background:{WARM_WHITE};")
         self._build()
-        self._load_remembered_folder()
 
     def _build(self):
         root = QVBoxLayout(self)
@@ -265,7 +307,7 @@ class DBFImportTab(QWidget):
             f"QLineEdit{{background:{WHITE};color:{MUTED};border:1px solid {BORDER};"
             f"border-radius:7px;padding:0 10px;font-size:12px;}}"
         )
-        browse = self._accent_btn("📂  Select Folder")
+        browse = self._accent_btn("📂  Browse")
         browse.setFixedWidth(120)
         browse.clicked.connect(self._browse)
         file_row.addWidget(self.file_lbl, stretch=1)
@@ -401,67 +443,20 @@ class DBFImportTab(QWidget):
 
     # ── File browsing ─────────────────────────────────────────────────────────
 
-    def _find_stock_dbf(self, folder: str) -> str | None:
-        """Return the path to stock.dbf in folder, case-insensitive, or None."""
-        try:
-            for entry in os.scandir(folder):
-                if entry.name.lower() == "stock.dbf" and entry.is_file():
-                    return entry.path
-        except OSError:
-            pass
-        return None
-
-    def _load_remembered_folder(self):
-        """On init, check if the saved folder still has stock.dbf and pre-load it."""
-        try:
-            from core.db_config import get as cfg_get
-            folder = cfg_get("dbf_import_folder", "")
-            if folder and os.path.isdir(folder):
-                path = self._find_stock_dbf(folder)
-                if path:
-                    self._set_file(path)
-        except Exception:
-            pass
-
     def _browse(self):
-        # Start in the last-used folder if it still exists
-        try:
-            from core.db_config import get as cfg_get
-            start = cfg_get("dbf_import_folder", "")
-            if not start or not os.path.isdir(start):
-                start = ""
-        except Exception:
-            start = ""
-
-        folder = QFileDialog.getExistingDirectory(
-            self, "Select Folder Containing stock.dbf", start
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select DBF Stock File", "",
+            "DBF Files (*.dbf *.DBF);;All Files (*)"
         )
-        if not folder:
-            return
-
-        path = self._find_stock_dbf(folder)
         if not path:
-            self.file_info.setText("⚠  No stock.dbf found in that folder.")
-            self.file_info.setStyleSheet(f"color:{RED};font-size:11px;")
             return
-
-        # Save folder for next time
-        try:
-            from core.db_config import set as cfg_set
-            cfg_set("dbf_import_folder", folder)
-        except Exception:
-            pass
-
-        self._set_file(path)
-
-    def _set_file(self, path: str):
-        """Load a DBF file path into the UI."""
         self._file = path
-        self.file_lbl.setText(path)
+        self.file_lbl.setText(os.path.basename(path))
         self.file_lbl.setStyleSheet(
             f"QLineEdit{{background:{WHITE};color:{DARK_CARD};border:1px solid {AMBER};"
             f"border-radius:7px;padding:0 10px;font-size:12px;}}"
         )
+        # Read file info
         try:
             from dbfread import DBF
             table = DBF(path, lowernames=True, ignore_missing_memofile=True)

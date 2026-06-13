@@ -58,23 +58,7 @@ DEFAULT_BAUD_RATE  = 9600
 PRINT_WIDTH_CHARS  = 42   # characters per line on 80mm at 12cpi
 
 
-# ── Connection helpers ────────────────────────────────────────────────────────
-
-def _detect_type(printer_name: str) -> str:
-    """Return 'network', 'serial', or 'usb' based on the printer name."""
-    n = printer_name.strip().lower()
-    if not n:
-        return "usb"
-    if n.startswith("/dev/") or n.lower().startswith("com"):
-        return "serial"
-    # IPv4 or hostname with optional port
-    parts = n.split(":")
-    if len(parts) <= 2 and (parts[0].replace(".", "").isdigit() or "." in parts[0]):
-        return "network"
-    return "usb"
-
-
-def _parse_vid_pid(s: str) -> tuple[int, int] | None:
+def _parse_vid_pid(s: str):
     """Parse 'VID:PID' hex string to (int, int), or None on failure."""
     try:
         parts = s.strip().split(":")
@@ -83,6 +67,51 @@ def _parse_vid_pid(s: str) -> tuple[int, int] | None:
     except (ValueError, AttributeError):
         pass
     return None
+
+
+# ── Connection helpers ────────────────────────────────────────────────────────
+
+def _detect_type(printer_name: str, explicit_type: str = "") -> str:
+    """
+    Return 'network', 'serial', or 'usb' based on the printer name.
+    explicit_type from settings overrides auto-detection when set.
+    """
+    if explicit_type in ("network", "serial", "usb"):
+        return explicit_type
+
+    n = printer_name.strip().lower()
+    if not n:
+        return "usb"
+
+    # Serial ports
+    if n.startswith("/dev/") or n.lower().startswith("com"):
+        return "serial"
+
+    # IPv4 address — all numeric segments separated by dots
+    parts = n.split(":")
+    host = parts[0]
+    segments = host.split(".")
+    if len(segments) == 4 and all(s.isdigit() for s in segments):
+        return "network"
+
+    # Hostname with dots (e.g. printer.local, 192.168.1.100)
+    if "." in host:
+        return "network"
+
+    # Anything that looks like a port number was given alone
+    if host.isdigit():
+        return "network"
+
+    # USB device names
+    if n.startswith("usb") or n.startswith("/dev/usb"):
+        return "usb"
+
+    # If it has any letters and no path separators it's likely a
+    # network hostname (e.g. EPSON-TM, printer, bixolon-pos)
+    if host and not host.startswith("/"):
+        return "network"
+
+    return "usb"
 
 
 # ── ThermalPrinter ────────────────────────────────────────────────────────────
@@ -100,13 +129,14 @@ class ThermalPrinter:
     """
 
     def __init__(self, printer_name: str = "", copies: int = 1,
-                 baud_rate: int = None, usb_vid_pid: str = ""):
-        self._name      = printer_name.strip()
-        self._copies    = max(1, copies)
-        self._conn      = None        # underlying connection object
-        self._type      = _detect_type(self._name)
-        self._baud_rate = baud_rate or DEFAULT_BAUD_RATE
-        self._vid_pid   = _parse_vid_pid(usb_vid_pid)   # (vid, pid) or None
+                 baud_rate: int = None, usb_vid_pid: str = "",
+                 explicit_type: str = ""):
+        self._name       = printer_name.strip()
+        self._copies     = max(1, copies)
+        self._conn       = None
+        self._type       = _detect_type(self._name, explicit_type)
+        self._baud_rate  = baud_rate or DEFAULT_BAUD_RATE
+        self._vid_pid    = _parse_vid_pid(usb_vid_pid)
         self._use_escpos = False
 
     # ── Factory ───────────────────────────────────────────────────────
@@ -115,11 +145,13 @@ class ThermalPrinter:
     def from_config(cls) -> "ThermalPrinter":
         """Build a ThermalPrinter from the settings DB."""
         from core.db_config import get as cfg_get
-        name      = cfg_get("thermal_printer_name", "")
-        copies    = int(cfg_get("receipt_copies", "1") or "1")
-        baud_rate = int(cfg_get("thermal_baud_rate", str(DEFAULT_BAUD_RATE)) or DEFAULT_BAUD_RATE)
-        vid_pid   = cfg_get("thermal_usb_vid_pid", "")
-        return cls(name, copies, baud_rate=baud_rate, usb_vid_pid=vid_pid)
+        name          = cfg_get("thermal_printer_name", "")
+        copies        = int(cfg_get("receipt_copies", "1") or "1")
+        baud_rate     = int(cfg_get("thermal_baud_rate", str(DEFAULT_BAUD_RATE)) or DEFAULT_BAUD_RATE)
+        vid_pid       = cfg_get("thermal_usb_vid_pid", "")
+        explicit_type = cfg_get("thermal_printer_type", "")
+        return cls(name, copies, baud_rate=baud_rate,
+                   usb_vid_pid=vid_pid, explicit_type=explicit_type)
 
     # ── Context manager ───────────────────────────────────────────────
 
@@ -146,12 +178,12 @@ class ThermalPrinter:
         if self._conn is None:
             return
         try:
-            if self._type == "_win32":
-                import win32print
-                win32print.ClosePrinter(self._conn)
-            elif self._type in ("network", "serial"):
+            if self._type == "network":
+                self._conn.close()
+            elif self._type == "serial":
                 self._conn.close()
             else:
+                # python-escpos or raw USB file
                 if hasattr(self._conn, "close"):
                     self._conn.close()
         except Exception:
@@ -181,16 +213,11 @@ class ThermalPrinter:
             )
 
     def _open_usb(self):
-        # Build list of VID/PID pairs to try — user-configured first
-        pairs_to_try = []
-        if self._vid_pid:
-            pairs_to_try.append(self._vid_pid)
-        pairs_to_try.extend(_USB_DEFAULTS)
-
-        # Try python-escpos first (works on Windows and Linux)
+        # Try python-escpos first
         try:
             import escpos.printer as ep
-            for vid, pid in pairs_to_try:
+            # Try each known vendor/product pair
+            for vid, pid in _USB_DEFAULTS:
                 try:
                     p = ep.Usb(vid, pid)
                     self._conn = p
@@ -198,18 +225,18 @@ class ThermalPrinter:
                     return
                 except Exception:
                     continue
+            raise PrinterError(
+                "Could not find a USB thermal printer.\n"
+                "Check the USB cable and that the printer is on.\n"
+                "You may need to specify the printer name in Manager → Settings."
+            )
         except ImportError:
             pass
 
-        # Windows fallback — try win32print if available
-        import sys
-        if sys.platform == "win32":
-            self._open_usb_windows()
-            return
-
-        # Linux fallback — raw /dev/usb/lp* nodes
+        # Raw USB fallback via /dev/usb/lp0 on Linux
         usb_nodes = ["/dev/usb/lp0", "/dev/usb/lp1", "/dev/lp0"]
         if self._name.lower().startswith("usb"):
+            # Try to use the number suffix e.g. USB001 → lp0
             suffix = self._name.lower().replace("usb", "").lstrip("0") or "0"
             usb_nodes = [f"/dev/usb/lp{suffix}", f"/dev/lp{suffix}"] + usb_nodes
 
@@ -228,40 +255,8 @@ class ThermalPrinter:
         raise PrinterError(
             "No USB printer device found.\n"
             "Install python-escpos for full USB support:\n"
-            "  pip install python-escpos\n"
-            "Or specify the USB VID:PID in Manager → Settings → Printers."
+            "  pip install python-escpos"
         )
-
-    def _open_usb_windows(self):
-        """Windows USB fallback using win32print raw spooler API."""
-        try:
-            import win32print
-            # Use the printer name directly if given (e.g. 'POS-80 Printer')
-            # otherwise use the default printer
-            printer_name = self._name if self._name.lower() not in ("usb", "") else None
-            if not printer_name:
-                printer_name = win32print.GetDefaultPrinter()
-            if not printer_name:
-                raise PrinterError(
-                    "No default printer found on Windows.\n"
-                    "Set the thermal printer as default or enter its exact name\n"
-                    "in Manager → Settings → Printers."
-                )
-            self._conn = win32print.OpenPrinter(printer_name)
-            self._win32_printer_name = printer_name
-            self._type = "_win32"   # flag for _write / close
-        except ImportError:
-            raise PrinterError(
-                "Could not find a USB thermal printer on Windows.\n\n"
-                "To fix this, do one of the following:\n"
-                "  1. Install python-escpos:  pip install python-escpos\n"
-                "     Then enter the USB VID:PID in Manager → Settings → Printers\n"
-                "     (e.g.  0416:5011  for a generic 80mm printer)\n\n"
-                "  2. Install the printer driver in Windows, set it as default,\n"
-                "     and enter its exact Windows printer name in Settings.\n\n"
-                "  3. Use a network connection instead:\n"
-                "     Enter the printer's IP address (e.g. 192.168.1.100)"
-            )
 
     # ── Low-level write ───────────────────────────────────────────────
 
@@ -270,13 +265,6 @@ class ThermalPrinter:
             raise PrinterError("Printer not connected.")
         if self._type == "network":
             self._conn.sendall(data)
-        elif self._type == "_win32":
-            import win32print
-            win32print.StartDocPrinter(self._conn, 1, ("Receipt", None, "RAW"))
-            win32print.StartPagePrinter(self._conn)
-            win32print.WritePrinter(self._conn, data)
-            win32print.EndPagePrinter(self._conn)
-            win32print.EndDocPrinter(self._conn)
         elif hasattr(self._conn, "write"):
             self._conn.write(data)
             if hasattr(self._conn, "flush"):
