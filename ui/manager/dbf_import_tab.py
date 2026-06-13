@@ -177,7 +177,8 @@ class _ImportWorker(QThread):
             try:
                 if existing:
                     if opts.get("update_existing"):
-                        kwargs["name"] = name
+                        if not opts.get("preserve_names"):
+                            kwargs["name"] = name
                         update_product(existing["id"], **kwargs)
                         if track_stock and opts.get("import_stock"):
                             qty = float(r.get("quantity") or 0)
@@ -319,6 +320,7 @@ class DBFImportTab(QWidget):
 
         self.chk_create = self._chk("Create new products not in database", True)
         self.chk_update = self._chk("Update existing products (matched by barcode)", True)
+        self.chk_preserve_names = self._chk("Don't overwrite existing product names", False)
 
         hint = QLabel("Products are matched by barcode. Unmatched barcodes are skipped if 'Create new' is off.")
         hint.setStyleSheet(f"color:{MUTED};font-size:10px;")
@@ -327,7 +329,9 @@ class DBFImportTab(QWidget):
         cv = QVBoxLayout(); cv.setSpacing(6)
         ch = QHBoxLayout(); ch.setSpacing(24)
         ch.addWidget(self.chk_create); ch.addWidget(self.chk_update); ch.addStretch()
-        cv.addLayout(ch); cv.addWidget(hint)
+        cv.addLayout(ch)
+        cv.addWidget(self.chk_preserve_names)
+        cv.addWidget(hint)
         cf.addLayout(cv)
         root.addWidget(conflict_frame)
 
@@ -501,6 +505,7 @@ class DBFImportTab(QWidget):
             "import_stock":    self.chk_stock.isChecked(),
             "create_new":      self.chk_create.isChecked(),
             "update_existing": self.chk_update.isChecked(),
+            "preserve_names":  self.chk_preserve_names.isChecked(),
         }
 
         self._worker = _ImportWorker(self._file, options, self)
