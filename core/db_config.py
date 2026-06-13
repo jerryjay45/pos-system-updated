@@ -74,6 +74,7 @@ _DEFAULTS = {
 
     # Printer
     "thermal_printer_name":  "",           # system printer name
+    "thermal_printer_type":  "",           # override: 'network', 'serial', 'usb', or '' for auto
     "normal_printer_name":   "",
     "normal_paper_size":     "A4",
     "receipt_copies":        "1",

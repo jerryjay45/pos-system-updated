@@ -170,6 +170,55 @@ class _BusinessPage(QWidget):
         return None
 
 
+class _TerminalPage(QWidget):
+    def __init__(self):
+        super().__init__()
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(40, 32, 40, 32)
+        lay.setSpacing(14)
+
+        title = QLabel("Terminal Identity")
+        title.setStyleSheet(f"color:{DARK_CARD};font-size:17px;font-weight:800;")
+        lay.addWidget(title)
+
+        desc = QLabel(
+            "Each POS terminal needs a unique ID so receipts from different "
+            "terminals never clash. Use a short code like T01, T02, or a "
+            "location name like MAIN or COUNTER2."
+        )
+        desc.setStyleSheet(f"color:{MUTED};font-size:12px;")
+        desc.setWordWrap(True)
+        lay.addWidget(desc)
+        lay.addSpacing(6)
+
+        id_lbl = QLabel("Terminal ID  *")
+        id_lbl.setStyleSheet(f"color:{LABEL_TEXT};font-size:12px;font-weight:600;")
+        lay.addWidget(id_lbl)
+        self.terminal_id = _input("e.g. T01  or  MAIN  or  COUNTER2")
+        self.terminal_id.setMaxLength(10)
+        lay.addWidget(self.terminal_id)
+
+        hint = QLabel(
+            "Max 10 characters. Letters and numbers only.\n"
+            "This will appear on every receipt:  T01-0001,  T01-0002 …"
+        )
+        hint.setStyleSheet(f"color:{MUTED};font-size:10px;")
+        hint.setWordWrap(True)
+        lay.addWidget(hint)
+        lay.addStretch()
+
+    def collect(self) -> dict:
+        return {"terminal_id": self.terminal_id.text().strip()}
+
+    def validate(self) -> str | None:
+        tid = self.terminal_id.text().strip()
+        if not tid:
+            return "Terminal ID is required."
+        if not tid.replace("-", "").isalnum():
+            return "Terminal ID must contain only letters and numbers."
+        return None
+
+
 class _TaxPage(QWidget):
     def __init__(self):
         super().__init__()
@@ -373,9 +422,11 @@ class _DonePage(QWidget):
 
         lay.addStretch()
 
-    def set_summary(self, biz_name: str, username: str, printer: str):
+    def set_summary(self, biz_name: str, username: str, printer: str,
+                    terminal_id: str = ""):
         lines = [
             f"✓  Business: {biz_name}",
+            f"✓  Terminal ID: {terminal_id or '—'}",
             f"✓  Manager account: {username}",
         ]
         if printer:
@@ -404,6 +455,7 @@ class SetupWizard(QDialog):
     _PAGE_TITLES = [
         "Welcome",
         "Business Info",
+        "Terminal",
         "Tax & Currency",
         "Manager Account",
         "Printer",
@@ -418,7 +470,7 @@ class SetupWizard(QDialog):
             managers = get_users(role="manager")
             return len(managers) == 0
         except Exception:
-            return False
+            return True
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -468,6 +520,7 @@ class SetupWizard(QDialog):
         self._pages = [
             _WelcomePage(),
             _BusinessPage(),
+            _TerminalPage(),
             _TaxPage(),
             _ManagerPage(),
             _PrinterPage(),
@@ -547,13 +600,15 @@ class SetupWizard(QDialog):
 
         # On second-to-last (printer), build done summary
         if self._current == last - 1:
-            biz   = self._pages[1].collect()
-            mgr   = self._pages[3].collect()
-            ptr   = self._pages[4].collect()
+            biz = self._pages[1].collect()
+            tid = self._pages[2].collect()
+            mgr = self._pages[4].collect()
+            ptr = self._pages[5].collect()
             self._pages[last].set_summary(
                 biz.get("name", "—"),
                 mgr.get("username", "—").upper(),
                 ptr.get("thermal_printer_name", ""),
+                tid.get("terminal_id", ""),
             )
 
         self._current += 1
@@ -584,13 +639,18 @@ class SetupWizard(QDialog):
                 from core.db_config import update_business
                 update_business(**{k: v for k, v in data.items() if v})
 
-            elif page_idx == 2 and data:   # Tax & currency
+            elif page_idx == 2 and data:   # Terminal ID
+                from core.db_config import set_many
+                tid = data.get("terminal_id", "").strip().upper()
+                if tid:
+                    set_many({"terminal_id": tid})
+
+            elif page_idx == 3 and data:   # Tax & currency
                 from core.db_config import set_many
                 set_many(data)
 
-            elif page_idx == 3 and data:   # Manager account
+            elif page_idx == 4 and data:   # Manager account
                 from core.db_users import get_users, add_user
-                # Only create if no manager exists yet
                 if not get_users(role="manager"):
                     add_user(
                         full_name=data["full_name"],
@@ -599,7 +659,7 @@ class SetupWizard(QDialog):
                         role="manager",
                     )
 
-            elif page_idx == 4 and data:   # Printer
+            elif page_idx == 5 and data:   # Printer
                 from core.db_config import set_many
                 settings = {}
                 if data.get("thermal_printer_name"):
