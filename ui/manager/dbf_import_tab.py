@@ -123,6 +123,17 @@ class _ImportWorker(QThread):
                     disc_cache[key] = cur.lastrowid
             return disc_cache[key]
 
+        # ── Detect which discount fields this DBF has ─────────────────
+        # DBF files from different POS versions may omit percent1/2/3
+        # (only have quan + pricem) or omit all discount fields entirely.
+        sample_fields = set(records[0].keys()) if records else set()
+        has_percent   = "percent1" in sample_fields
+        has_pricem    = "pricem1"  in sample_fields
+        has_quan      = "quan1"    in sample_fields
+        # A DBF has usable discount data only if it has quantities AND
+        # at least one of: percent fields or fixed-price fields.
+        dbf_has_discounts = has_quan and (has_percent or has_pricem)
+
         # ── Main import loop ──────────────────────────────────────────
         for i, rec in enumerate(records):
             self.progress.emit(i + 1, total)
@@ -145,17 +156,39 @@ class _ImportWorker(QThread):
             group_raw = (r.get("group") or r.get("category") or "").strip()
             group_id  = _get_or_create_group(group_raw) if opts.get("import_groups") else None
 
-            # Discount levels — match or create
+            # Discount levels — only attempt if this DBF actually carries
+            # discount data. When percent fields are absent, fall back to
+            # pricem (fixed-price tiers) and derive a percentage from price.
             disc1_id = disc2_id = None
-            if opts.get("import_discounts"):
-                q1   = int(round(float(r.get("quan1") or 0)))
-                pct1 = float(r.get("percent1") or 0)
-                q2   = int(round(float(r.get("quan2") or 0)))
-                pct2 = float(r.get("percent2") or 0)
-                if q1 > 0 and pct1 > 0:
-                    disc1_id = _get_or_create_disc_level(q1, pct1)
-                if q2 > 0 and pct2 > 0:
-                    disc2_id = _get_or_create_disc_level(q2, pct2)
+            disc_source = ""   # for the import log note
+            if opts.get("import_discounts") and dbf_has_discounts:
+                for tier, qty_key, pct_key, pm_key, attr in [
+                    (1, "quan1", "percent1", "pricem1", "disc1_id"),
+                    (2, "quan2", "percent2", "pricem2", "disc2_id"),
+                ]:
+                    qty = int(round(float(r.get(qty_key) or 0)))
+                    if qty <= 0:
+                        continue
+
+                    pct = 0.0
+                    if has_percent:
+                        pct = float(r.get(pct_key) or 0)
+
+                    # Fall back to pricem (fixed discounted price) when
+                    # percent field is absent or zero but pricem is set.
+                    if pct <= 0 and has_pricem and price > 0:
+                        pm = float(r.get(pm_key) or 0)
+                        if 0 < pm < price:
+                            pct = round((1 - pm / price) * 100, 1)
+
+                    if pct > 0:
+                        level_id = _get_or_create_disc_level(qty, pct)
+                        if tier == 1:
+                            disc1_id = level_id
+                            disc_source += f"L1:{qty}+@{pct}% "
+                        else:
+                            disc2_id = level_id
+                            disc_source += f"L2:{qty}+@{pct}% "
 
             existing = get_product_by_barcode(barcode)
 
@@ -168,7 +201,11 @@ class _ImportWorker(QThread):
                 kwargs["gct_applicable"] = int(gct)
             if opts.get("import_groups") and group_id:
                 kwargs["group_id"] = group_id
-            if opts.get("import_discounts"):
+            if opts.get("import_discounts") and dbf_has_discounts:
+                # Only overwrite existing discount assignments when this
+                # DBF actually supplied discount data for this product.
+                # If both levels are None it means the DBF had no discount
+                # info for this row — leave the existing DB values alone.
                 if disc1_id is not None:
                     kwargs["discount_level1"] = disc1_id
                 if disc2_id is not None:
@@ -187,9 +224,9 @@ class _ImportWorker(QThread):
                                 adjust_stock(existing["id"], int(qty),
                                              "DBF import", user_id=None)
                         updated += 1
-                        disc_note = f"  disc:{disc1_id}/{disc2_id}" if opts.get("import_discounts") else ""
+                        disc_note = disc_source.strip() if opts.get("import_discounts") and disc_source else ""
                         self.row_done.emit({"name": name, "barcode": barcode,
-                                            "status": "updated", "reason": disc_note.strip()})
+                                            "status": "updated", "reason": disc_note})
                     else:
                         skipped += 1
                         self.row_done.emit({"name": name, "barcode": barcode,
@@ -297,7 +334,7 @@ class DBFImportTab(QWidget):
         self.chk_cost      = self._chk("Cost  (cost field)", True)
         self.chk_gct       = self._chk("GCT Flag  (gct field)", True)
         self.chk_groups    = self._chk("Groups / Categories  (group/category fields)", True)
-        self.chk_discounts = self._chk("Discount Levels  (quan1-3 / percent1-3 fields)", True)
+        self.chk_discounts = self._chk("Discount Levels  (quan1-3 / percent1-3 or pricem1-3 fields)", True)
         self.chk_stock     = self._chk("Stock Quantity  (quantity field)", False)
 
         for c in (self.chk_price, self.chk_cost, self.chk_gct):
