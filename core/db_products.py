@@ -168,14 +168,23 @@ def init_db():
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
                 name             TEXT    NOT NULL DEFAULT '',
                 discount_percent REAL    NOT NULL DEFAULT 0.0,
-                min_quantity     INTEGER NOT NULL DEFAULT 1
+                min_quantity     INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(min_quantity, discount_percent)
             )
         """)
+        # Add unique index to existing DBs that were created without the constraint
+        try:
+            con.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS
+                idx_disc_levels_unique ON discount_levels(min_quantity, discount_percent)
+            """)
+        except Exception:
+            pass
         # Seed two default levels if the table is empty
         if con.execute("SELECT COUNT(*) FROM discount_levels").fetchone()[0] == 0:
-            con.execute("INSERT INTO discount_levels (name, discount_percent, min_quantity) "
+            con.execute("INSERT OR IGNORE INTO discount_levels (name, discount_percent, min_quantity) "
                         "VALUES ('Level 1 - Bulk', 5.0, 6)")
-            con.execute("INSERT INTO discount_levels (name, discount_percent, min_quantity) "
+            con.execute("INSERT OR IGNORE INTO discount_levels (name, discount_percent, min_quantity) "
                         "VALUES ('Level 2 - Wholesale', 10.0, 12)")
 
         # ── Step 3: migrate groups table ──────────────────────────────
