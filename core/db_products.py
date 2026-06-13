@@ -60,6 +60,10 @@ CREATE TABLE IF NOT EXISTS products (
     variant_group_id INTEGER REFERENCES price_groups(id) ON DELETE SET NULL,
     discount_level1  INTEGER DEFAULT NULL,
     discount_level2  INTEGER DEFAULT NULL,
+    inline_disc1_qty INTEGER DEFAULT NULL,
+    inline_disc1_pct REAL    DEFAULT NULL,
+    inline_disc2_qty INTEGER DEFAULT NULL,
+    inline_disc2_pct REAL    DEFAULT NULL,
     gct_applicable   INTEGER NOT NULL DEFAULT 1,
     is_case          INTEGER NOT NULL DEFAULT 0,
     case_qty         INTEGER DEFAULT NULL,
@@ -151,6 +155,10 @@ def init_db():
                 for col, defn in [
                     ("alias_group_id",   "INTEGER REFERENCES price_groups(id) ON DELETE SET NULL"),
                     ("variant_group_id", "INTEGER REFERENCES price_groups(id) ON DELETE SET NULL"),
+                    ("inline_disc1_qty", "INTEGER DEFAULT NULL"),
+                    ("inline_disc1_pct", "REAL DEFAULT NULL"),
+                    ("inline_disc2_qty", "INTEGER DEFAULT NULL"),
+                    ("inline_disc2_pct", "REAL DEFAULT NULL"),
                 ]:
                     if col not in cols:
                         con.execute(f"ALTER TABLE products ADD COLUMN {col} {defn}")
@@ -539,6 +547,8 @@ def add_product(barcode: str, name: str, cost: float,
                 gct_applicable: bool = True, is_case: bool = False,
                 case_qty: int = None, case_product_id: int = None,
                 discount_level1: int = None, discount_level2: int = None,
+                inline_disc1_qty: int = None, inline_disc1_pct: float = None,
+                inline_disc2_qty: int = None, inline_disc2_pct: float = None,
                 stock: int = 0) -> int:
     with _conn() as con:
         cur = con.execute(
@@ -546,13 +556,19 @@ def add_product(barcode: str, name: str, cost: float,
                (barcode, name, cost, selling_price, group_id,
                 alias_group_id, variant_group_id,
                 gct_applicable, is_case, case_qty, case_product_id,
-                discount_level1, discount_level2, stock)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                discount_level1, discount_level2,
+                inline_disc1_qty, inline_disc1_pct,
+                inline_disc2_qty, inline_disc2_pct,
+                stock)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (barcode.strip().upper(), name.strip().upper(),
              cost, selling_price, group_id,
              alias_group_id, variant_group_id,
              int(gct_applicable), int(is_case), case_qty, case_product_id,
-             discount_level1, discount_level2, stock)
+             discount_level1, discount_level2,
+             inline_disc1_qty, inline_disc1_pct,
+             inline_disc2_qty, inline_disc2_pct,
+             stock)
         )
         con.commit()
         return cur.lastrowid

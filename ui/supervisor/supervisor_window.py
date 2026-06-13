@@ -548,19 +548,33 @@ class SupervisorWindow(BaseWindow):
                 pct = 0.10
             selling_price = round(cost * (1 + pct), 2)
 
+        disc1_id = self.f_disc1.currentData()
+        disc2_id = self.f_disc2.currentData()
+
         kwargs = dict(
             barcode=barcode, name=name,
             cost=cost, selling_price=selling_price,
             group_id=group_id,
             alias_group_id=alias_group_id,
             variant_group_id=variant_group_id,
-            discount_level1=self.f_disc1.currentData(),
-            discount_level2=self.f_disc2.currentData(),
+            discount_level1=disc1_id,
+            discount_level2=disc2_id,
             gct_applicable=int(self.t_gct.isChecked()),
             is_case=int(is_case),
             case_qty=case_qty,
             case_product_id=case_product_id,
         )
+
+        # When a named discount level is assigned, clear the corresponding
+        # inline field (set by DBF import) so only one source is active.
+        # When the dropdown is left as None, leave the inline field alone —
+        # the user hasn't touched that tier so the import value should stand.
+        if disc1_id is not None:
+            kwargs["inline_disc1_qty"] = None
+            kwargs["inline_disc1_pct"] = None
+        if disc2_id is not None:
+            kwargs["inline_disc2_qty"] = None
+            kwargs["inline_disc2_pct"] = None
         try:
             if self._editing_product_id:
                 old = get_product_by_id(self._editing_product_id)

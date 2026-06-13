@@ -85,11 +85,10 @@ def _draw_label(painter: QPainter, rect: QRectF,
     px_per_mm = w / max(w_mm, 1)
 
     # Font sizes in points — proportional to label height in mm
-    name_pt   = max(h_mm * 0.38, 7.0)
-    price_pt  = max(h_mm * 0.55, 10.0)
-    gct_pt    = max(h_mm * 0.28, 5.5)
-    disc_pt   = max(h_mm * 0.32, 6.5)
-    bc_num_pt = max(h_mm * 0.14, 4.0)
+    name_pt  = max(h_mm * 0.38, 7.0)
+    price_pt = max(h_mm * 0.55, 10.0)
+    gct_pt   = max(h_mm * 0.28, 5.5)
+    disc_pt  = max(h_mm * 0.52, 9.0)
 
     pad = max(2.0 * px_per_mm, 2.0)
 
@@ -103,13 +102,13 @@ def _draw_label(painter: QPainter, rect: QRectF,
     radius = max(1.5 * px_per_mm, 3.0)
     painter.drawRoundedRect(rect.adjusted(pen_w, pen_w, -pen_w, -pen_w), radius, radius)
 
-    # Row heights — measure name first so we give it exactly what it needs
+    # Row heights — barcode removed; all space goes to name/price/discounts
     shown_disc   = disc_rows[:2]
-    disc_h_each  = h * 0.15
+    disc_h_each  = h * 0.22   # larger rows for the bigger discount font
     disc_h       = disc_h_each * len(shown_disc) if (show_price and shown_disc) else 0
     name_avail_w = w - pad * 2
 
-    # Set the name font now so we can measure with it
+    # Measure name at its font size so it gets exactly the height it needs
     name_font = QFont("Arial"); name_font.setPointSizeF(name_pt); name_font.setBold(True)
     painter.setFont(name_font)
 
@@ -123,19 +122,8 @@ def _draw_label(painter: QPainter, rect: QRectF,
     else:
         needed_name_h = 0
 
-    # Barcode: shrink if name needs the room, minimum 8% of label height
-    barcode_h_base = h * 0.13 if (show_barcode and barcode) else 0
-    price_h_base   = h * 0.42 if show_price else 0
-    slack = h - pad * 2 - disc_h - price_h_base - needed_name_h - barcode_h_base
-    if slack >= 0:
-        barcode_h = barcode_h_base
-    else:
-        transfer  = min(abs(slack), h * 0.35)
-        barcode_h = max(barcode_h_base - transfer,
-                        h * 0.08 if (show_barcode and barcode) else 0)
-
-    remaining = h - barcode_h - disc_h - pad * 2
-    name_h    = min(needed_name_h, remaining * 0.50) if show_name else 0
+    remaining = h - disc_h - pad * 2
+    name_h    = min(needed_name_h, remaining * 0.45) if show_name else 0
     price_h   = remaining - name_h if show_price else 0
 
     cur_y = y + pad
@@ -194,12 +182,6 @@ def _draw_label(painter: QPainter, rect: QRectF,
                 Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                 f"Discount {pct_str}")
             cur_y += disc_h_each
-
-    # Barcode
-    if show_barcode and barcode and barcode_h > 2:
-        bc_rect = QRectF(x + pad, cur_y + pad * 0.3,
-                         w - pad * 2, barcode_h - pad * 0.5)
-        _draw_barcode_bars(painter, bc_rect, barcode, preview, num_pt=bc_num_pt)
 
     painter.restore()
 
@@ -607,17 +589,37 @@ class PriceTagTab(QWidget):
             tbl.setItem(row, 3, grp_it)
 
             # Build disc_rows: (min_qty, disc_price, pct_str)
+            # Source 1: named global discount levels (FK)
+            # Source 2: inline fields from DBF import (no FK, not shown in edit form)
             disc_rows = []
-            for key in ("discount_level1", "discount_level2"):
-                lid = p.get(key)
-                if lid and lid in disc_levels:
-                    dl  = disc_levels[lid]
-                    qty = dl.get("min_quantity") or 0
-                    pct = dl.get("discount_percent") or 0.0
+            for lvl_key, qty_key, pct_key in [
+                ("discount_level1", None,              None),
+                ("discount_level2", None,              None),
+                (None,              "inline_disc1_qty", "inline_disc1_pct"),
+                (None,              "inline_disc2_qty", "inline_disc2_pct"),
+            ]:
+                if lvl_key:
+                    lid = p.get(lvl_key)
+                    if lid and lid in disc_levels:
+                        dl  = disc_levels[lid]
+                        qty = dl.get("min_quantity") or 0
+                        pct = dl.get("discount_percent") or 0.0
+                        if qty and pct:
+                            disc_price = round(p["selling_price"] * (1 - pct / 100), 2)
+                            disc_rows.append((qty, disc_price, f"{pct:.0f}%"))
+                else:
+                    qty = p.get(qty_key)
+                    pct = p.get(pct_key)
                     if qty and pct:
                         disc_price = round(p["selling_price"] * (1 - pct / 100), 2)
-                        pct_str    = f"{pct:.0f}%"
-                        disc_rows.append((qty, disc_price, pct_str))
+                        disc_rows.append((qty, disc_price, f"{pct:.0f}%"))
+            # Deduplicate and sort by min_qty
+            seen = set()
+            deduped = []
+            for row in sorted(disc_rows, key=lambda r: r[0]):
+                if row[0] not in seen:
+                    seen.add(row[0]); deduped.append(row)
+            disc_rows = deduped
 
             self._prod_data[p["id"]] = {
                 "name":           p["name"],

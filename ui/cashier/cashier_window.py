@@ -630,6 +630,10 @@ class CashierWindow(BaseWindow):
             "gct_applicable":   product["gct_applicable"],
             "disc_level_id":    product.get("discount_level1"),
             "disc_level2_id":   product.get("discount_level2"),
+            "inline_disc1_qty": product.get("inline_disc1_qty"),
+            "inline_disc1_pct": product.get("inline_disc1_pct"),
+            "inline_disc2_qty": product.get("inline_disc2_qty"),
+            "inline_disc2_pct": product.get("inline_disc2_pct"),
             "discount_applied": 0.0,
             "total":            round((price + gct) * qty, 2),
             "barcode":          product["barcode"],
@@ -706,24 +710,41 @@ class CashierWindow(BaseWindow):
         editor.editingFinished.connect(_commit)
 
     def _apply_discount(self, item):
-        """Apply level-1 / level-2 discount based on qty thresholds."""
+        """Apply level-1 / level-2 discount based on qty thresholds.
+
+        Priority:
+          1. Named discount levels (discount_level1/2 FK → discount_levels table)
+          2. Inline discount fields (inline_disc1/2_qty/pct) set by DBF import —
+             these are stored directly on the product and never appear in the
+             edit form, keeping the global levels list clean.
+        """
         qty      = item["qty"]
         price    = item["price"]
         gct_unit = item["gct"]
         rules    = self._disc_rules
         disc_pct = 0.0
 
-        # Try both key names for discount level ids
+        # Named discount levels (global, editable in settings)
         lvl1_id = item.get("disc_level_id") or item.get("discount_level1")
         lvl2_id = item.get("disc_level2_id") or item.get("discount_level2")
-
-        lvl2 = rules.get(lvl2_id)
         lvl1 = rules.get(lvl1_id)
+        lvl2 = rules.get(lvl2_id)
 
         if lvl2 and qty >= lvl2["min_qty"]:
             disc_pct = lvl2["pct"]
         elif lvl1 and qty >= lvl1["min_qty"]:
             disc_pct = lvl1["pct"]
+
+        # Inline discount fallback (DBF-imported, not in global levels list)
+        if disc_pct == 0.0:
+            i2_qty = item.get("inline_disc2_qty")
+            i2_pct = item.get("inline_disc2_pct")
+            i1_qty = item.get("inline_disc1_qty")
+            i1_pct = item.get("inline_disc1_pct")
+            if i2_qty and i2_pct and qty >= i2_qty:
+                disc_pct = i2_pct
+            elif i1_qty and i1_pct and qty >= i1_qty:
+                disc_pct = i1_pct
 
         disc_per_unit            = round(price * disc_pct / 100, 2)
         item["discount_applied"] = disc_per_unit
