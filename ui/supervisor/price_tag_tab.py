@@ -103,23 +103,47 @@ def _draw_label(painter: QPainter, rect: QRectF,
     radius = max(1.5 * px_per_mm, 3.0)
     painter.drawRoundedRect(rect.adjusted(pen_w, pen_w, -pen_w, -pen_w), radius, radius)
 
-    # Row heights as fractions of label height
-    shown_disc  = disc_rows[:2]
-    barcode_h   = h * 0.13 if show_barcode and barcode else 0
-    disc_h_each = h * 0.15
-    disc_h      = disc_h_each * len(shown_disc) if (show_price and shown_disc) else 0
-    remaining   = h - barcode_h - disc_h - pad * 2
-    name_h      = remaining * 0.35 if show_name else 0
-    price_h     = remaining * 0.55 if show_price else 0
+    # Row heights — measure name first so we give it exactly what it needs
+    shown_disc   = disc_rows[:2]
+    disc_h_each  = h * 0.15
+    disc_h       = disc_h_each * len(shown_disc) if (show_price and shown_disc) else 0
+    name_avail_w = w - pad * 2
+
+    # Set the name font now so we can measure with it
+    name_font = QFont("Arial"); name_font.setPointSizeF(name_pt); name_font.setBold(True)
+    painter.setFont(name_font)
+
+    if show_name and name:
+        needed_name_h = painter.boundingRect(
+            QRectF(0, 0, name_avail_w, h * 2),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop |
+            Qt.TextFlag.TextWordWrap,
+            name
+        ).height() + pad * 0.5
+    else:
+        needed_name_h = 0
+
+    # Barcode: shrink if name needs the room, minimum 8% of label height
+    barcode_h_base = h * 0.13 if (show_barcode and barcode) else 0
+    price_h_base   = h * 0.42 if show_price else 0
+    slack = h - pad * 2 - disc_h - price_h_base - needed_name_h - barcode_h_base
+    if slack >= 0:
+        barcode_h = barcode_h_base
+    else:
+        transfer  = min(abs(slack), h * 0.35)
+        barcode_h = max(barcode_h_base - transfer,
+                        h * 0.08 if (show_barcode and barcode) else 0)
+
+    remaining = h - barcode_h - disc_h - pad * 2
+    name_h    = min(needed_name_h, remaining * 0.50) if show_name else 0
+    price_h   = remaining - name_h if show_price else 0
 
     cur_y = y + pad
 
     # Product name — word wrap allowed
     if show_name and name:
-        font = QFont("Arial"); font.setPointSizeF(name_pt); font.setBold(True)
-        painter.setFont(font)
         painter.setPen(QColor("#000000"))
-        tr = QRectF(x + pad, cur_y, w - pad * 2, name_h)
+        tr = QRectF(x + pad, cur_y, name_avail_w, name_h)
         painter.drawText(tr,
             Qt.AlignmentFlag.AlignLeft |
             Qt.AlignmentFlag.AlignTop |
