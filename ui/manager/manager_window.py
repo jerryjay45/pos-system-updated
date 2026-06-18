@@ -756,7 +756,7 @@ class ManagerWindow(SupervisorWindow):
         nb_hint.setStyleSheet(f"color:{MUTED};font-size:10px;"); nb_hint.setWordWrap(True)
         nb.addWidget(nb_hint)
 
-        # ── Serial baud rate + USB VID:PID ────────────────────────────
+        # ── Serial baud rate + USB VID:PID + Connection type override ─
         self.ps_baud = QComboBox()
         self.ps_baud.setFixedHeight(34); self.ps_baud.setFixedWidth(130)
         for rate in [9600, 19200, 38400, 57600, 115200]:
@@ -765,6 +765,13 @@ class ManagerWindow(SupervisorWindow):
 
         self.ps_vid_pid = self._finp("e.g. 0416:5011  (optional — for USB printers)")
 
+        self.ps_type = QComboBox()
+        self.ps_type.setFixedHeight(34); self.ps_type.setFixedWidth(130)
+        for label, val in [("Auto-detect", ""), ("Network / IP", "network"),
+                           ("Serial / COM", "serial"), ("USB", "usb")]:
+            self.ps_type.addItem(label, val)
+        self.ps_type.setStyleSheet(f"QComboBox{{background:{WHITE};color:{DARK_CARD};border:1px solid {BORDER};border-radius:7px;padding:0 10px;font-size:13px;}}QComboBox:focus{{border-color:{AMBER};}}")
+
         adv_box = QFrame()
         adv_box.setStyleSheet(f"background:{WARM_WHITE};border:1px solid {BORDER};border-radius:8px;")
         adv = QVBoxLayout(adv_box); adv.setContentsMargins(14,10,14,10); adv.setSpacing(8)
@@ -772,17 +779,19 @@ class ManagerWindow(SupervisorWindow):
         adv_lbl.setStyleSheet(f"color:{DARK_CARD};font-size:12px;font-weight:600;")
         adv.addWidget(adv_lbl)
         adv_row = QHBoxLayout(); adv_row.setSpacing(16)
+        type_col = QVBoxLayout(); type_col.setSpacing(3)
+        tl = QLabel("Connection Type"); tl.setStyleSheet(f"color:{MUTED};font-size:10px;")
+        type_col.addWidget(tl); type_col.addWidget(self.ps_type)
         baud_col = QVBoxLayout(); baud_col.setSpacing(3)
-        baud_col.addWidget(QLabel("Serial Baud Rate").__class__("Serial Baud Rate"))
         bl = QLabel("Serial Baud Rate"); bl.setStyleSheet(f"color:{MUTED};font-size:10px;")
         baud_col.addWidget(bl); baud_col.addWidget(self.ps_baud)
         vid_col = QVBoxLayout(); vid_col.setSpacing(3)
         vl = QLabel("USB VID:PID  (hex)"); vl.setStyleSheet(f"color:{MUTED};font-size:10px;")
         vid_col.addWidget(vl); vid_col.addWidget(self.ps_vid_pid)
-        adv_row.addLayout(baud_col); adv_row.addLayout(vid_col, stretch=1)
+        adv_row.addLayout(type_col); adv_row.addLayout(baud_col); adv_row.addLayout(vid_col, stretch=1)
         adv.addLayout(adv_row)
-        adv_hint = QLabel("Baud rate applies to serial connections.  "
-                          "VID:PID helps identify your USB printer — find it in Device Manager (Windows) or lsusb (Linux).")
+        adv_hint = QLabel("Connection Type overrides auto-detection — use if the printer isn't found automatically.  "
+                          "Baud rate applies to serial.  VID:PID for USB — find in Device Manager (Windows) or lsusb (Linux).")
         adv_hint.setStyleSheet(f"color:{MUTED};font-size:10px;"); adv_hint.setWordWrap(True)
         adv.addWidget(adv_hint)
 
@@ -849,6 +858,10 @@ class ManagerWindow(SupervisorWindow):
         idx = self.ps_baud.findData(baud)
         self.ps_baud.setCurrentIndex(idx if idx >= 0 else 0)
         self.ps_vid_pid.setText(get("thermal_usb_vid_pid", ""))
+        # Connection type override
+        ptype = get("thermal_printer_type", "")
+        tidx = self.ps_type.findData(ptype)
+        self.ps_type.setCurrentIndex(tidx if tidx >= 0 else 0)
         # Normal printer
         paper = get("normal_paper_size", "A4")
         pidx = self.ps_paper.findData(paper)
@@ -872,6 +885,7 @@ class ManagerWindow(SupervisorWindow):
                 "receipt_copies":       str(self.ps_copies.value()),
                 "thermal_baud_rate":    str(self.ps_baud.currentData()),
                 "thermal_usb_vid_pid":  self.ps_vid_pid.text().strip(),
+                "thermal_printer_type": self.ps_type.currentData(),
             })
             self.printers_feedback.setText("✓  Printer settings saved.")
             self.printers_feedback.setStyleSheet(f"color:{GREEN};font-size:11px;font-weight:600;")
