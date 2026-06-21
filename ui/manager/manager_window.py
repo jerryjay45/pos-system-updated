@@ -701,9 +701,6 @@ class ManagerWindow(SupervisorWindow):
 
         lay.addWidget(self._section_lbl("Printer Configuration"))
         lay.addWidget(self._hdiv())
-        hint = QLabel("Enter the system printer name exactly as it appears in your OS print settings.")
-        hint.setStyleSheet(f"color:{MUTED};font-size:11px;"); hint.setWordWrap(True)
-        lay.addWidget(hint)
 
         def ps_row(label, widget, hint_txt=""):
             box = QFrame(); box.setStyleSheet(f"background:{WARM_WHITE};border:1px solid {BORDER};border-radius:8px;")
@@ -711,100 +708,87 @@ class ManagerWindow(SupervisorWindow):
             lbl = QLabel(label); lbl.setStyleSheet(f"color:{DARK_CARD};font-size:12px;font-weight:600;")
             bl.addWidget(lbl); bl.addWidget(widget)
             if hint_txt:
-                h = QLabel(hint_txt); h.setStyleSheet(f"color:{MUTED};font-size:10px;"); bl.addWidget(h)
+                h = QLabel(hint_txt); h.setStyleSheet(f"color:{MUTED};font-size:10px;"); h.setWordWrap(True); bl.addWidget(h)
             return box
 
-        self.ps_thermal = self._finp("e.g. 192.168.1.100  or  COM3  or  USB001")
-        self.ps_label   = self._finp("e.g. Zebra_GK420d")
-        self.ps_copies  = QSpinBox(); self.ps_copies.setRange(1,5); self.ps_copies.setValue(1)
+        # ── Receipt printer ───────────────────────────────────────────
+        self.ps_receipt_combo = QComboBox()
+        self.ps_receipt_combo.setFixedHeight(34)
+        self.ps_receipt_combo.setEditable(True)
+        self.ps_receipt_combo.setStyleSheet(f"QComboBox{{background:{WHITE};color:{DARK_CARD};border:1px solid {BORDER};border-radius:7px;padding:0 10px;font-size:13px;}}QComboBox:focus{{border-color:{AMBER};}}")
+        self.ps_receipt_combo.lineEdit().setPlaceholderText("Leave blank to use OS default printer…")
+
+        refresh_receipt = QPushButton("↻")
+        refresh_receipt.setFixedSize(34, 34)
+        refresh_receipt.setToolTip("Refresh printer list")
+        refresh_receipt.setCursor(Qt.CursorShape.PointingHandCursor)
+        refresh_receipt.setStyleSheet(f"QPushButton{{background:transparent;color:{AMBER};border:1.5px solid {AMBER};border-radius:17px;font-size:14px;font-weight:700;}}QPushButton:hover{{background:{AMBER};color:white;}}")
+        refresh_receipt.clicked.connect(lambda: self._printers_refresh_list(self.ps_receipt_combo))
+
+        receipt_box = QFrame()
+        receipt_box.setStyleSheet(f"background:{WARM_WHITE};border:1px solid {BORDER};border-radius:8px;")
+        rb = QVBoxLayout(receipt_box); rb.setContentsMargins(14,10,14,10); rb.setSpacing(6)
+        rb_lbl = QLabel("Receipt Printer")
+        rb_lbl.setStyleSheet(f"color:{DARK_CARD};font-size:12px;font-weight:600;")
+        rb.addWidget(rb_lbl)
+        rb_row = QHBoxLayout(); rb_row.setSpacing(8)
+        rb_row.addWidget(self.ps_receipt_combo, stretch=1)
+        rb_row.addWidget(refresh_receipt)
+        rb.addLayout(rb_row)
+        rb_hint = QLabel(
+            "Used for automatic receipt printing at checkout and reprints.  "
+            "Leave blank to use your OS default printer — no configuration needed."
+        )
+        rb_hint.setStyleSheet(f"color:{MUTED};font-size:10px;"); rb_hint.setWordWrap(True)
+        rb.addWidget(rb_hint)
+
+        # ── Copies ────────────────────────────────────────────────────
+        self.ps_copies = QSpinBox(); self.ps_copies.setRange(1,5); self.ps_copies.setValue(1)
         self.ps_copies.setFixedHeight(34); self.ps_copies.setFixedWidth(100)
         self.ps_copies.setStyleSheet(f"QSpinBox{{background:{WHITE};color:{DARK_CARD};border:1px solid {BORDER};border-radius:7px;padding:0 10px;font-size:13px;}}QSpinBox:focus{{border-color:{AMBER};}}")
 
-        # ── Normal printer — OS picker + paper size ───────────────────
+        # ── Normal printer (future cash tab / delivery invoices) ──────
         self.ps_normal_combo = QComboBox()
         self.ps_normal_combo.setFixedHeight(34)
         self.ps_normal_combo.setEditable(True)
         self.ps_normal_combo.setStyleSheet(f"QComboBox{{background:{WHITE};color:{DARK_CARD};border:1px solid {BORDER};border-radius:7px;padding:0 10px;font-size:13px;}}QComboBox:focus{{border-color:{AMBER};}}")
-        self.ps_normal_combo.lineEdit().setPlaceholderText("Select or type printer name…")
+        self.ps_normal_combo.lineEdit().setPlaceholderText("Leave blank to use OS default printer…")
 
-        self.ps_paper = QComboBox()
-        self.ps_paper.setFixedHeight(34); self.ps_paper.setFixedWidth(110)
-        for s in ["A4", "Letter", "Legal"]:
-            self.ps_paper.addItem(s, s)
-        self.ps_paper.setStyleSheet(f"QComboBox{{background:{WHITE};color:{DARK_CARD};border:1px solid {BORDER};border-radius:7px;padding:0 10px;font-size:13px;}}QComboBox:focus{{border-color:{AMBER};}}")
-
-        refresh_btn = QPushButton("↻")
-        refresh_btn.setFixedSize(34, 34)
-        refresh_btn.setToolTip("Refresh printer list")
-        refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        refresh_btn.setStyleSheet(f"QPushButton{{background:transparent;color:{AMBER};border:1.5px solid {AMBER};border-radius:17px;font-size:14px;font-weight:700;}}QPushButton:hover{{background:{AMBER};color:white;}}")
-        refresh_btn.clicked.connect(self._printers_refresh_list)
+        refresh_normal = QPushButton("↻")
+        refresh_normal.setFixedSize(34, 34)
+        refresh_normal.setToolTip("Refresh printer list")
+        refresh_normal.setCursor(Qt.CursorShape.PointingHandCursor)
+        refresh_normal.setStyleSheet(f"QPushButton{{background:transparent;color:{AMBER};border:1.5px solid {AMBER};border-radius:17px;font-size:14px;font-weight:700;}}QPushButton:hover{{background:{AMBER};color:white;}}")
+        refresh_normal.clicked.connect(lambda: self._printers_refresh_list(self.ps_normal_combo))
 
         normal_box = QFrame()
         normal_box.setStyleSheet(f"background:{WARM_WHITE};border:1px solid {BORDER};border-radius:8px;")
         nb = QVBoxLayout(normal_box); nb.setContentsMargins(14,10,14,10); nb.setSpacing(6)
-        nb_lbl = QLabel("Normal / A4 Printer")
+        nb_lbl = QLabel("Invoice / Normal Printer")
         nb_lbl.setStyleSheet(f"color:{DARK_CARD};font-size:12px;font-weight:600;")
         nb.addWidget(nb_lbl)
         nb_row = QHBoxLayout(); nb_row.setSpacing(8)
         nb_row.addWidget(self.ps_normal_combo, stretch=1)
-        nb_row.addWidget(self.ps_paper)
-        nb_row.addWidget(refresh_btn)
+        nb_row.addWidget(refresh_normal)
         nb.addLayout(nb_row)
-        nb_hint = QLabel("Used for receipts and reports when no thermal printer is set.  "
-                         "Paper size applies to all normal-printer output.")
+        nb_hint = QLabel(
+            "Used for delivery order invoices (cash tab — coming soon).  "
+            "Leave blank to use OS default printer."
+        )
         nb_hint.setStyleSheet(f"color:{MUTED};font-size:10px;"); nb_hint.setWordWrap(True)
         nb.addWidget(nb_hint)
 
-        # ── Serial baud rate + USB VID:PID + Connection type override ─
-        self.ps_baud = QComboBox()
-        self.ps_baud.setFixedHeight(34); self.ps_baud.setFixedWidth(130)
-        for rate in [9600, 19200, 38400, 57600, 115200]:
-            self.ps_baud.addItem(str(rate), rate)
-        self.ps_baud.setStyleSheet(f"QComboBox{{background:{WHITE};color:{DARK_CARD};border:1px solid {BORDER};border-radius:7px;padding:0 10px;font-size:13px;}}QComboBox:focus{{border-color:{AMBER};}}")
+        # ── Label printer ─────────────────────────────────────────────
+        self.ps_label = self._finp("e.g. Zebra_GK420d")
 
-        self.ps_vid_pid = self._finp("e.g. 0416:5011  (optional — for USB printers)")
-
-        self.ps_type = QComboBox()
-        self.ps_type.setFixedHeight(34); self.ps_type.setFixedWidth(130)
-        for label, val in [("Auto-detect", ""), ("Network / IP", "network"),
-                           ("Serial / COM", "serial"), ("USB", "usb")]:
-            self.ps_type.addItem(label, val)
-        self.ps_type.setStyleSheet(f"QComboBox{{background:{WHITE};color:{DARK_CARD};border:1px solid {BORDER};border-radius:7px;padding:0 10px;font-size:13px;}}QComboBox:focus{{border-color:{AMBER};}}")
-
-        adv_box = QFrame()
-        adv_box.setStyleSheet(f"background:{WARM_WHITE};border:1px solid {BORDER};border-radius:8px;")
-        adv = QVBoxLayout(adv_box); adv.setContentsMargins(14,10,14,10); adv.setSpacing(8)
-        adv_lbl = QLabel("Advanced Thermal Options")
-        adv_lbl.setStyleSheet(f"color:{DARK_CARD};font-size:12px;font-weight:600;")
-        adv.addWidget(adv_lbl)
-        adv_row = QHBoxLayout(); adv_row.setSpacing(16)
-        type_col = QVBoxLayout(); type_col.setSpacing(3)
-        tl = QLabel("Connection Type"); tl.setStyleSheet(f"color:{MUTED};font-size:10px;")
-        type_col.addWidget(tl); type_col.addWidget(self.ps_type)
-        baud_col = QVBoxLayout(); baud_col.setSpacing(3)
-        bl = QLabel("Serial Baud Rate"); bl.setStyleSheet(f"color:{MUTED};font-size:10px;")
-        baud_col.addWidget(bl); baud_col.addWidget(self.ps_baud)
-        vid_col = QVBoxLayout(); vid_col.setSpacing(3)
-        vl = QLabel("USB VID:PID  (hex)"); vl.setStyleSheet(f"color:{MUTED};font-size:10px;")
-        vid_col.addWidget(vl); vid_col.addWidget(self.ps_vid_pid)
-        adv_row.addLayout(type_col); adv_row.addLayout(baud_col); adv_row.addLayout(vid_col, stretch=1)
-        adv.addLayout(adv_row)
-        adv_hint = QLabel("Connection Type overrides auto-detection — use if the printer isn't found automatically.  "
-                          "Baud rate applies to serial.  VID:PID for USB — find in Device Manager (Windows) or lsusb (Linux).")
-        adv_hint.setStyleSheet(f"color:{MUTED};font-size:10px;"); adv_hint.setWordWrap(True)
-        adv.addWidget(adv_hint)
-
-        lay.addWidget(ps_row("Thermal / Receipt Printer", self.ps_thermal,
-            "IP address for network  |  COM3 or /dev/ttyUSB0 for serial  |  USB001 or blank for USB"))
-        lay.addWidget(normal_box)
-        lay.addWidget(ps_row("Label Printer", self.ps_label, "Used for shelf price labels"))
-        lay.addWidget(adv_box)
-
-        copies_lbl = QLabel("Receipt Copies  (thermal)")
+        # ── Layout ────────────────────────────────────────────────────
+        lay.addWidget(receipt_box)
+        copies_lbl = QLabel("Receipt Copies")
         copies_lbl.setStyleSheet(f"color:{DARK_CARD};font-size:12px;font-weight:600;")
         copies_row = QHBoxLayout(); copies_row.addWidget(self.ps_copies); copies_row.addStretch()
         lay.addWidget(copies_lbl); lay.addLayout(copies_row)
+        lay.addWidget(normal_box)
+        lay.addWidget(ps_row("Label Printer", self.ps_label, "Used for shelf price labels"))
 
         lay.addStretch()
         self.printers_feedback = QLabel("")
@@ -828,64 +812,52 @@ class ManagerWindow(SupervisorWindow):
         self._printers_load()
         scroll.setWidget(fw); return scroll
 
-    def _printers_refresh_list(self):
-        """Repopulate the normal printer combo with current OS printers."""
+    def _printers_refresh_list(self, combo: "QComboBox"):
+        """Populate a printer combo with the current OS printer list."""
         try:
-            from utils.normal_printer import get_available_printers, get_default_printer
-            current = self.ps_normal_combo.currentText().strip()
-            self.ps_normal_combo.clear()
-            self.ps_normal_combo.addItem("")
-            for name in get_available_printers():
-                self.ps_normal_combo.addItem(name)
+            from PyQt6.QtPrintSupport import QPrinterInfo
+            current = combo.currentText().strip()
+            combo.clear()
+            combo.addItem("")   # blank = OS default
+            for info in QPrinterInfo.availablePrinters():
+                combo.addItem(info.printerName())
             if current:
-                idx = self.ps_normal_combo.findText(current)
-                if idx >= 0:
-                    self.ps_normal_combo.setCurrentIndex(idx)
-                else:
-                    self.ps_normal_combo.setEditText(current)
+                idx = combo.findText(current)
+                combo.setCurrentIndex(idx if idx >= 0 else 0)
+                if idx < 0:
+                    combo.setEditText(current)
             self.printers_feedback.setText(
-                f"✓  Found {self.ps_normal_combo.count() - 1} printer(s).")
+                f"✓  Found {combo.count() - 1} printer(s).")
             self.printers_feedback.setStyleSheet(f"color:{GREEN};font-size:11px;font-weight:600;")
         except Exception as e:
             self.printers_feedback.setText(f"Could not list printers: {e}")
             self.printers_feedback.setStyleSheet(f"color:{RED};font-size:11px;font-weight:600;")
 
     def _printers_load(self):
-        self.ps_thermal.setText(get("thermal_printer_name", ""))
+        from core.db_config import get
+        self.ps_copies.setValue(int(get("receipt_copies", "1") or "1"))
         self.ps_label.setText(get("label_printer_name", ""))
-        self.ps_copies.setValue(int(get("receipt_copies", "1")))
-        baud = int(get("thermal_baud_rate", "9600") or "9600")
-        idx = self.ps_baud.findData(baud)
-        self.ps_baud.setCurrentIndex(idx if idx >= 0 else 0)
-        self.ps_vid_pid.setText(get("thermal_usb_vid_pid", ""))
-        # Connection type override
-        ptype = get("thermal_printer_type", "")
-        tidx = self.ps_type.findData(ptype)
-        self.ps_type.setCurrentIndex(tidx if tidx >= 0 else 0)
-        # Normal printer
-        paper = get("normal_paper_size", "A4")
-        pidx = self.ps_paper.findData(paper)
-        self.ps_paper.setCurrentIndex(pidx if pidx >= 0 else 0)
-        self._printers_refresh_list()
-        saved_normal = get("normal_printer_name", "")
-        if saved_normal:
-            idx2 = self.ps_normal_combo.findText(saved_normal)
-            if idx2 >= 0:
-                self.ps_normal_combo.setCurrentIndex(idx2)
-            else:
-                self.ps_normal_combo.setEditText(saved_normal)
+        self._printers_refresh_list(self.ps_receipt_combo)
+        self._printers_refresh_list(self.ps_normal_combo)
+        # Restore saved selections
+        for combo, key in [(self.ps_receipt_combo, "thermal_printer_name"),
+                           (self.ps_normal_combo,  "normal_printer_name")]:
+            saved = get(key, "")
+            if saved:
+                idx = combo.findText(saved)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+                else:
+                    combo.setEditText(saved)
 
     def _printers_save(self):
         try:
+            from core.db_config import set_many
             set_many({
-                "thermal_printer_name": self.ps_thermal.text().strip(),
+                "thermal_printer_name": self.ps_receipt_combo.currentText().strip(),
                 "normal_printer_name":  self.ps_normal_combo.currentText().strip(),
-                "normal_paper_size":    self.ps_paper.currentData(),
                 "label_printer_name":   self.ps_label.text().strip(),
                 "receipt_copies":       str(self.ps_copies.value()),
-                "thermal_baud_rate":    str(self.ps_baud.currentData()),
-                "thermal_usb_vid_pid":  self.ps_vid_pid.text().strip(),
-                "thermal_printer_type": self.ps_type.currentData(),
             })
             self.printers_feedback.setText("✓  Printer settings saved.")
             self.printers_feedback.setStyleSheet(f"color:{GREEN};font-size:11px;font-weight:600;")
@@ -894,58 +866,29 @@ class ManagerWindow(SupervisorWindow):
             self.printers_feedback.setStyleSheet(f"color:{RED};font-size:11px;font-weight:600;")
 
     def _printers_test(self):
-        """Send a short test print using current form values."""
+        """Send a test print to the receipt printer."""
         from utils.thermal_printer import ThermalPrinter, PrinterError
-        thermal = self.ps_thermal.text().strip()
-        normal  = self.ps_normal_combo.currentText().strip()
-        baud    = self.ps_baud.currentData()
-        vid_pid = self.ps_vid_pid.text().strip()
-
-        if not thermal and not normal:
-            self.printers_feedback.setText("⚠  Enter a printer name or address first.")
-            self.printers_feedback.setStyleSheet(f"color:{RED};font-size:11px;font-weight:600;")
-            return
-
-        self.printers_feedback.setText("Connecting…")
+        name = self.ps_receipt_combo.currentText().strip()
+        self.printers_feedback.setText("Sending test print…")
         self.printers_feedback.setStyleSheet(f"color:{MUTED};font-size:11px;font-weight:600;")
         from PyQt6.QtWidgets import QApplication
         QApplication.processEvents()
-
         test_text = (
             "\n"
-            "--------------------------------\n"
-            "     MERCHANT POS SYSTEMS\n"
-            "        ** TEST PRINT **\n"
-            "--------------------------------\n"
+            "----------------------------------------\n"
+            "        MERCHANT POS SYSTEMS\n"
+            "          ** TEST PRINT **\n"
+            "----------------------------------------\n"
             "  Printer connected successfully\n"
-            "--------------------------------\n"
+            f"  Printer: {name or 'OS Default'}\n"
+            "----------------------------------------\n"
             "\n\n\n"
         )
-
-        # Prefer normal printer for test if set
-        if normal:
-            try:
-                from utils.normal_printer import print_text_normal
-                ok, err = print_text_normal(test_text, show_dialog=False, parent=self)
-                if ok:
-                    self.printers_feedback.setText("✓  Test page sent to normal printer.")
-                    self.printers_feedback.setStyleSheet(f"color:{GREEN};font-size:11px;font-weight:600;")
-                else:
-                    self.printers_feedback.setText(f"✗  {err}")
-                    self.printers_feedback.setStyleSheet(f"color:{RED};font-size:11px;font-weight:600;")
-                    from PyQt6.QtWidgets import QMessageBox
-                    QMessageBox.warning(self, "Printer Test Failed", str(err))
-            except Exception as e:
-                self.printers_feedback.setText(f"✗  {e}")
-                self.printers_feedback.setStyleSheet(f"color:{RED};font-size:11px;font-weight:600;")
-            return
-
         try:
-            printer = ThermalPrinter(thermal, copies=1, baud_rate=baud, usb_vid_pid=vid_pid)
+            printer = ThermalPrinter(name, copies=1)
             with printer as p:
                 p.print_text(test_text)
-                p.cut()
-            self.printers_feedback.setText("✓  Test page sent to thermal printer.")
+            self.printers_feedback.setText("✓  Test print sent successfully.")
             self.printers_feedback.setStyleSheet(f"color:{GREEN};font-size:11px;font-weight:600;")
         except PrinterError as e:
             self.printers_feedback.setText(f"✗  {str(e).splitlines()[0]}")
@@ -953,7 +896,7 @@ class ManagerWindow(SupervisorWindow):
             from PyQt6.QtWidgets import QMessageBox
             QMessageBox.warning(self, "Printer Test Failed", str(e))
         except Exception as e:
-            self.printers_feedback.setText(f"✗  Unexpected error: {e}")
+            self.printers_feedback.setText(f"✗  {e}")
             self.printers_feedback.setStyleSheet(f"color:{RED};font-size:11px;font-weight:600;")
 
     def _build_pg_panel(self):

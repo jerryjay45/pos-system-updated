@@ -145,9 +145,6 @@ info "Installing PyQt6..."
 info "Installing application dependencies..."
 "$PIP" install \
     dbfread \
-    python-escpos \
-    pyserial \
-    pyusb \
     psycopg2-binary \
     --quiet
 

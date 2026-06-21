@@ -73,8 +73,7 @@ _DEFAULTS = {
     "checkout_quick_amounts": "2,5,10,20,50,100",
 
     # Printer
-    "thermal_printer_name":  "",           # system printer name
-    "thermal_printer_type":  "",           # override: 'network', 'serial', 'usb', or '' for auto
+    "thermal_printer_name":  "",           # receipt printer name (blank = OS default)
     "normal_printer_name":   "",
     "normal_paper_size":     "A4",
     "receipt_copies":        "1",

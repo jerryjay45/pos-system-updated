@@ -11,7 +11,7 @@ Paper width: 80mm  →  42 characters at 12 CPI (standard ESC/POS default).
 from __future__ import annotations
 from datetime import datetime
 
-WIDTH = 42
+WIDTH = 40
 
 
 # ── Layout helpers ────────────────────────────────────────────────────────────

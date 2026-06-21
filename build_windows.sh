@@ -135,9 +135,6 @@ $WINE_PIP install "PyQt6==6.11.0" --quiet 2>/dev/null
 info "Installing application dependencies..."
 $WINE_PIP install \
     dbfread \
-    python-escpos \
-    pyserial \
-    pyusb \
     psycopg2-binary \
     --quiet 2>/dev/null
 
@@ -216,8 +213,7 @@ for pkg in ['core', 'ui', 'utils']:
 # Extra runtime dependencies
 hiddenimports += [
     'dbfread', 'dbfread.dbf', 'dbfread.field_parser',
-    'serial', 'usb', 'psycopg2',
-    'escpos', 'escpos.printer',
+    'psycopg2',
     $HIDDEN,
 ]
 
