@@ -98,23 +98,36 @@ def _dialog_print(text: str, parent=None) -> bool:
         dlg.setWindowTitle("Print Preview")
         dlg.resize(900, 650)
 
-        def _paint(p: QPainter):
-            font = QFont("Courier New", 9)
-            font.setStyleHint(QFont.StyleHint.Monospace)
-            p.setFont(font)
-            fm        = p.fontMetrics()
-            line_h    = fm.height() + 1
-            page_rect = printer.pageRect(QPrinter.Unit.DevicePixel)
-            x         = int(page_rect.left()) + 10
-            y_start   = int(page_rect.top())  + 10
-            y_max     = int(page_rect.bottom()) - 10
-            y         = y_start
-            for line in text.split("\n"):
-                p.drawText(x, y + fm.ascent(), line)
-                y += line_h
-                if y + line_h > y_max:
-                    printer.newPage()
-                    y = y_start
+        def _paint(preview_printer: QPrinter):
+            # paintRequested passes a QPrinter, not a QPainter
+            painter = QPainter()
+            try:
+                if not painter.begin(preview_printer):
+                    return
+                font = QFont("Courier New", 9)
+                font.setStyleHint(QFont.StyleHint.Monospace)
+                painter.setFont(font)
+
+                fm        = painter.fontMetrics()
+                line_h    = fm.height() + 1
+                page_rect = preview_printer.pageRect(QPrinter.Unit.DevicePixel)
+                x         = int(page_rect.left()) + 10
+                y_start   = int(page_rect.top())  + 10
+                y_max     = int(page_rect.bottom()) - 10
+                y         = y_start
+
+                for line in text.split("\n"):
+                    painter.drawText(x, y + fm.ascent(), line)
+                    y += line_h
+                    if y + line_h > y_max:
+                        preview_printer.newPage()
+                        y = y_start
+
+                painter.end()
+            except Exception as e:
+                print(f"[PrintManager] Paint error: {e}")
+                try: painter.end()
+                except Exception: pass
 
         dlg.paintRequested.connect(_paint)
         result = dlg.exec()

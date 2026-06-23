@@ -1251,9 +1251,13 @@ class SupervisorWindow(BaseWindow):
         self.tx_reprint_btn.setEnabled(True)
 
     def _tx_reprint(self):
-        row = self.tx_table.currentRow(); item = self.tx_table.item(row, 0)
-        if not item: return
-        QMessageBox.information(self, "Reprint", f"Reprinting {item.text()}…\n(Printer integration coming)")
+        row = self.tx_table.currentRow()
+        item = self.tx_table.item(row, 0)
+        if not item:
+            return
+        receipt_number = item.text()
+        from utils.print_manager import reprint_receipt
+        reprint_receipt(receipt_number, parent=self)
 
     # ================================================================
     # VOID / REFUND TAB
