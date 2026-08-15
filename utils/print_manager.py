@@ -58,11 +58,85 @@ def _safe_num(receipt_number: str) -> str:
     return receipt_number.replace("#", "").replace("/", "-").strip()
 
 
+def _raw_text_print(text: str, printer_name: str = "", parent=None) -> bool:
+    """
+    Send plain text directly to the printer spooler — bypasses QPrinter's
+    raster rendering entirely. Required for dot matrix printers using
+    generic text-only drivers (e.g. Epson TM-U220 via Windows generic driver).
+
+    Windows: uses win32print to open a raw print job.
+    Linux:   uses `lpr` subprocess with -l (passthrough) flag.
+    Falls back to _auto_print if neither is available.
+    """
+    import sys
+    import platform
+
+    # Normalise line endings for dot matrix (CR+LF) and add form feed
+    lines = text.replace("\r\n", "\n").replace("\r", "\n")
+    raw   = (lines + "\n\f").encode("ascii", errors="replace")
+
+    if platform.system() == "Windows":
+        try:
+            import win32print
+            pname = printer_name or win32print.GetDefaultPrinter()
+            hprinter = win32print.OpenPrinter(pname)
+            try:
+                hjob = win32print.StartDocPrinter(hprinter, 1,
+                    ("Receipt", None, "RAW"))
+                try:
+                    win32print.StartPagePrinter(hprinter)
+                    win32print.WritePrinter(hprinter, raw)
+                    win32print.EndPagePrinter(hprinter)
+                finally:
+                    win32print.EndDocPrinter(hprinter)
+            finally:
+                win32print.ClosePrinter(hprinter)
+            return True
+        except ImportError:
+            print("[PrintManager] win32print not installed — falling back")
+        except Exception as e:
+            print(f"[PrintManager] win32print error: {e}")
+            if parent:
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(parent, "Printer Error", str(e))
+            return False
+
+    else:
+        # Linux / macOS — use lpr with passthrough flag
+        try:
+            import subprocess
+            cmd = ["lpr", "-l"]
+            if printer_name:
+                cmd += ["-P", printer_name]
+            proc = subprocess.run(cmd, input=raw,
+                                  capture_output=True, timeout=10)
+            if proc.returncode != 0:
+                err = proc.stderr.decode(errors="replace")
+                print(f"[PrintManager] lpr error: {err}")
+                return False
+            return True
+        except Exception as e:
+            print(f"[PrintManager] lpr error: {e}")
+            return False
+
+
 def _auto_print(text: str, parent=None) -> bool:
     """
     Print without a dialog using the configured receipt printer.
-    Falls back to OS default if no printer is configured.
+    Routes:
+      1. raw_text path  — if normal_printer_name is set and platform supports it
+      2. thermal path   — ESC/POS via ThermalPrinter
+      3. fallback        — silent failure, text copy already saved
     """
+    from core.db_config import get as cfg_get
+    normal_name  = cfg_get("normal_printer_name",  "").strip()
+    thermal_name = cfg_get("thermal_printer_name", "").strip()
+
+    # Generic text / dot matrix path
+    if normal_name:
+        return _raw_text_print(text, normal_name, parent)
+
+    # Thermal / ESC-POS path
     from utils.thermal_printer import ThermalPrinter, PrinterError
     try:
         with ThermalPrinter.from_config() as p:
@@ -84,9 +158,14 @@ def _auto_print(text: str, parent=None) -> bool:
 
 def _dialog_print(text: str, parent=None) -> bool:
     """
-    Print via QPrintPreviewDialog — user sees preview and picks printer.
-    Defaults to OS default printer.
+    Print via dialog. If normal_printer_name is set, sends raw text directly
+    (dot matrix / generic text driver). Otherwise shows QPrintPreviewDialog.
     """
+    from core.db_config import get as cfg_get
+    normal_name = cfg_get("normal_printer_name", "").strip()
+    if normal_name:
+        return _raw_text_print(text, normal_name, parent)
+
     try:
         from PyQt6.QtPrintSupport import QPrinter, QPrintPreviewDialog
         from PyQt6.QtGui          import QPainter, QFont
@@ -99,7 +178,6 @@ def _dialog_print(text: str, parent=None) -> bool:
         dlg.resize(900, 650)
 
         def _paint(preview_printer: QPrinter):
-            # paintRequested passes a QPrinter, not a QPainter
             painter = QPainter()
             try:
                 if not painter.begin(preview_printer):
