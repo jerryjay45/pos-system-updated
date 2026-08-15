@@ -281,12 +281,27 @@ class SupervisorWindow(BaseWindow):
         disc_row = QHBoxLayout(); disc_row.setSpacing(8)
         d1_col = QVBoxLayout(); d1_col.setSpacing(4)
         d2_col = QVBoxLayout(); d2_col.setSpacing(4)
+
         d1_col.addWidget(self._flabel("Discount Level 1"))
         self.f_disc1 = QComboBox(); self.f_disc1.setStyleSheet(self._combo_style())
         self._populate_discount_levels(self.f_disc1); d1_col.addWidget(self.f_disc1)
+        self.f_disc1_custom = self._build_custom_disc_inputs("1")
+        self.f_disc1_custom.setVisible(False)
+        d1_col.addWidget(self.f_disc1_custom)
+        self.f_disc1.currentIndexChanged.connect(
+            lambda: self.f_disc1_custom.setVisible(
+                self.f_disc1.currentData() == "custom"))
+
         d2_col.addWidget(self._flabel("Discount Level 2"))
         self.f_disc2 = QComboBox(); self.f_disc2.setStyleSheet(self._combo_style())
         self._populate_discount_levels(self.f_disc2); d2_col.addWidget(self.f_disc2)
+        self.f_disc2_custom = self._build_custom_disc_inputs("2")
+        self.f_disc2_custom.setVisible(False)
+        d2_col.addWidget(self.f_disc2_custom)
+        self.f_disc2.currentIndexChanged.connect(
+            lambda: self.f_disc2_custom.setVisible(
+                self.f_disc2.currentData() == "custom"))
+
         disc_row.addLayout(d1_col); disc_row.addLayout(d2_col)
         lay.addLayout(disc_row)
 
@@ -470,6 +485,9 @@ class SupervisorWindow(BaseWindow):
         self.f_alias_group.clear_value()
         self.f_variant_group.clear_value()
         self.f_disc1.setCurrentIndex(0); self.f_disc2.setCurrentIndex(0)
+        self.f_disc1_custom.setVisible(False); self.f_disc2_custom.setVisible(False)
+        self.f_disc1_qty.setValue(1); self.f_disc1_pct.setValue(5.0)
+        self.f_disc2_qty.setValue(1); self.f_disc2_pct.setValue(10.0)
         self.t_gct.setChecked(True); self.t_case.setChecked(False)
         self.f_price.clear(); self.f_price_hint.clear()
         self.stock_section.setVisible(False)
@@ -509,6 +527,35 @@ class SupervisorWindow(BaseWindow):
                 self.f_group.setCurrentIndex(i); break
         self.f_alias_group.set_value(p.get("alias_group_id"))
         self.f_variant_group.set_value(p.get("variant_group_id"))
+
+        # Discount level 1 — named level or custom inline
+        if p.get("inline_disc1_qty") and p.get("inline_disc1_pct"):
+            # Select "Custom…" and fill inputs
+            for i in range(self.f_disc1.count()):
+                if self.f_disc1.itemData(i) == "custom":
+                    self.f_disc1.setCurrentIndex(i); break
+            self.f_disc1_qty.setValue(int(p["inline_disc1_qty"]))
+            self.f_disc1_pct.setValue(float(p["inline_disc1_pct"]))
+            self.f_disc1_custom.setVisible(True)
+        else:
+            self.f_disc1_custom.setVisible(False)
+            for i in range(self.f_disc1.count()):
+                if self.f_disc1.itemData(i) == p.get("discount_level1"):
+                    self.f_disc1.setCurrentIndex(i); break
+
+        # Discount level 2 — named level or custom inline
+        if p.get("inline_disc2_qty") and p.get("inline_disc2_pct"):
+            for i in range(self.f_disc2.count()):
+                if self.f_disc2.itemData(i) == "custom":
+                    self.f_disc2.setCurrentIndex(i); break
+            self.f_disc2_qty.setValue(int(p["inline_disc2_qty"]))
+            self.f_disc2_pct.setValue(float(p["inline_disc2_pct"]))
+            self.f_disc2_custom.setVisible(True)
+        else:
+            self.f_disc2_custom.setVisible(False)
+            for i in range(self.f_disc2.count()):
+                if self.f_disc2.itemData(i) == p.get("discount_level2"):
+                    self.f_disc2.setCurrentIndex(i); break
         # Show stock section with current level
         stock = p.get("stock", 0)
         self.stock_current_lbl.setText(f"Current stock: {stock} unit{'s' if stock != 1 else ''}")
@@ -551,28 +598,56 @@ class SupervisorWindow(BaseWindow):
         disc1_id = self.f_disc1.currentData()
         disc2_id = self.f_disc2.currentData()
 
+        # Handle custom discount tiers
+        if disc1_id == "custom":
+            kwargs["discount_level1"]  = None
+            kwargs["inline_disc1_qty"] = self.f_disc1_qty.value()
+            kwargs["inline_disc1_pct"] = self.f_disc1_pct.value()
+            disc1_id = None
+        elif disc1_id is not None:
+            kwargs["inline_disc1_qty"] = None
+            kwargs["inline_disc1_pct"] = None
+        else:
+            # None selected — leave inline fields untouched
+            pass
+
+        if disc2_id == "custom":
+            kwargs["discount_level2"]  = None
+            kwargs["inline_disc2_qty"] = self.f_disc2_qty.value()
+            kwargs["inline_disc2_pct"] = self.f_disc2_pct.value()
+            disc2_id = None
+        elif disc2_id is not None:
+            kwargs["inline_disc2_qty"] = None
+            kwargs["inline_disc2_pct"] = None
+        else:
+            pass
+
+        kwargs["discount_level1"] = disc1_id
+        kwargs["discount_level2"] = disc2_id
+
         kwargs = dict(
             barcode=barcode, name=name,
             cost=cost, selling_price=selling_price,
             group_id=group_id,
             alias_group_id=alias_group_id,
             variant_group_id=variant_group_id,
-            discount_level1=disc1_id,
-            discount_level2=disc2_id,
             gct_applicable=int(self.t_gct.isChecked()),
             is_case=int(is_case),
             case_qty=case_qty,
             case_product_id=case_product_id,
         )
-
-        # When a named discount level is assigned, clear the corresponding
-        # inline field (set by DBF import) so only one source is active.
-        # When the dropdown is left as None, leave the inline field alone —
-        # the user hasn't touched that tier so the import value should stand.
-        if disc1_id is not None:
+        kwargs["discount_level1"] = disc1_id
+        kwargs["discount_level2"] = disc2_id
+        if self.f_disc1.currentData() == "custom":
+            kwargs["inline_disc1_qty"] = self.f_disc1_qty.value()
+            kwargs["inline_disc1_pct"] = self.f_disc1_pct.value()
+        elif self.f_disc1.currentData() is not None:
             kwargs["inline_disc1_qty"] = None
             kwargs["inline_disc1_pct"] = None
-        if disc2_id is not None:
+        if self.f_disc2.currentData() == "custom":
+            kwargs["inline_disc2_qty"] = self.f_disc2_qty.value()
+            kwargs["inline_disc2_pct"] = self.f_disc2_pct.value()
+        elif self.f_disc2.currentData() is not None:
             kwargs["inline_disc2_qty"] = None
             kwargs["inline_disc2_pct"] = None
         try:
@@ -758,6 +833,38 @@ class SupervisorWindow(BaseWindow):
         self.f_group.clear(); self.f_group.addItem("— No Group —", None)
         for g in get_groups(): self.f_group.addItem(g["name"], g["id"])
 
+    def _build_custom_disc_inputs(self, tier: str):
+        """Build inline qty + pct inputs for a custom discount tier."""
+        from PyQt6.QtWidgets import QDoubleSpinBox, QSpinBox as _QSpinBox
+        from PyQt6.QtWidgets import QFrame as _QFrame
+        frame = _QFrame()
+        frame.setStyleSheet(
+            f"background:{AMBER_LIGHTEST};border:1px solid {AMBER};"
+            f"border-radius:6px;"
+        )
+        from PyQt6.QtWidgets import QHBoxLayout as _QHL
+        _spinbox_css = (
+            f"QSpinBox,QDoubleSpinBox{{background:{WHITE};color:{DARK_CARD};"
+            f"border:1px solid {BORDER};border-radius:7px;"
+            f"padding:0 8px;font-size:12px;}}"
+            f"QSpinBox:focus,QDoubleSpinBox:focus{{border-color:{AMBER};}}"
+        )
+        fl = _QHL(frame); fl.setContentsMargins(8, 6, 8, 6); fl.setSpacing(8)
+        fl.addWidget(self._flabel("Min Qty:"))
+        qty = _QSpinBox(); qty.setMinimum(1); qty.setMaximum(9999)
+        qty.setFixedHeight(30); qty.setFixedWidth(70)
+        qty.setStyleSheet(_spinbox_css)
+        fl.addWidget(qty)
+        fl.addWidget(self._flabel("Discount %:"))
+        pct = QDoubleSpinBox(); pct.setMinimum(0.1); pct.setMaximum(99.9)
+        pct.setDecimals(1); pct.setSuffix("%")
+        pct.setFixedHeight(30); pct.setFixedWidth(80)
+        pct.setStyleSheet(_spinbox_css)
+        fl.addWidget(pct); fl.addStretch()
+        setattr(self, f"f_disc{tier}_qty", qty)
+        setattr(self, f"f_disc{tier}_pct", pct)
+        return frame
+
     def _populate_discount_levels(self, combo):
         combo.clear(); combo.addItem("— None —", None)
         try:
@@ -769,6 +876,7 @@ class SupervisorWindow(BaseWindow):
                 )
         except Exception:
             pass
+        combo.addItem("Custom…", "custom")
 
 
     # ================================================================
