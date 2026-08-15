@@ -1081,16 +1081,39 @@ class CashierWindow(BaseWindow):
         return get_quick_keys()
 
     def _load_discount_rules(self) -> dict:
+        """Return {level_id: {min_qty, pct}} for named levels,
+        and store per-product inline rules separately."""
         try:
             import sqlite3
             from config import DB_PRODUCTS
             con = sqlite3.connect(DB_PRODUCTS)
+            con.row_factory = sqlite3.Row
+            # Named global discount levels
             rows = con.execute(
                 "SELECT id, min_quantity, discount_percent FROM discount_levels"
             ).fetchall()
+            rules = {r[0]: {"min_qty": r[1], "pct": r[2]} for r in rows}
+            # Per-product inline discount rules
+            inline = con.execute(
+                "SELECT id, inline_disc1_qty, inline_disc1_pct, "
+                "inline_disc2_qty, inline_disc2_pct FROM products "
+                "WHERE inline_disc1_qty IS NOT NULL OR inline_disc2_qty IS NOT NULL"
+            ).fetchall()
+            self._inline_disc_rules = {}
+            for r in inline:
+                tiers = []
+                if r["inline_disc1_qty"] and r["inline_disc1_pct"]:
+                    tiers.append({"min_qty": r["inline_disc1_qty"],
+                                  "pct": r["inline_disc1_pct"]})
+                if r["inline_disc2_qty"] and r["inline_disc2_pct"]:
+                    tiers.append({"min_qty": r["inline_disc2_qty"],
+                                  "pct": r["inline_disc2_pct"]})
+                if tiers:
+                    self._inline_disc_rules[r["id"]] = tiers
             con.close()
-            return {r[0]: {"min_qty": r[1], "pct": r[2]} for r in rows}
+            return rules
         except Exception:
+            self._inline_disc_rules = {}
             return {}
 
     def _reload_discount_rules(self):
