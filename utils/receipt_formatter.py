@@ -75,6 +75,19 @@ def _wrap(text: str, width: int, indent: int = 0) -> list[str]:
         lines.append(line)
     return lines or [""]
 
+def _item_value_cols(width: int) -> tuple[int, int, int, int]:
+    """
+    Column widths for the qty/price/gct/total row under each item's
+    name. Qty gets a fixed narrow column; the rest splits the remaining
+    width three ways (any remainder goes to Total).
+    """
+    qty_w = 4
+    remaining = max(3, width - qty_w)    # 1-char-per-column floor for absurdly narrow widths
+    price_w = remaining // 3
+    gct_w   = remaining // 3
+    total_w = remaining - price_w - gct_w
+    return qty_w, price_w, gct_w, total_w
+
 def _cur(amount: float, symbol: str = "$") -> str:
     return f"{symbol}{amount:.2f}"
 
@@ -122,19 +135,22 @@ def format_sale_lines(receipt: dict, biz: dict, currency: str = "$",
         lines.append((_right("Cashier:", receipt["cashier_name"], w), "normal"))
     lines.append((_div(w), "div"))
 
-    # Items — name/qty/price/total columns scaled to paper width
-    total_w = 8
-    qty_w   = 4
-    name_w  = max(14, w - qty_w - 6 - total_w)
-    price_w = w - name_w - qty_w - total_w
-    lines.append((f"{'Item':<{name_w}}{'Qty':>{qty_w}}{'Price':>{price_w}}{'Total':>{total_w}}", "normal"))
+    # Items — product name on its own line, values (qty/price/GCT/total)
+    # on the line below. Squeezing the name onto the same line as the
+    # numeric columns is what made the old layout illegible — long names
+    # got truncated and the numbers ran together. This gives the name the
+    # full paper width and wraps rather than truncates.
+    qty_w, price_w, gct_w, total_w = _item_value_cols(w)
+    lines.append((f"{'Qty':>{qty_w}}{'Price':>{price_w}}{'GCT':>{gct_w}}{'Total':>{total_w}}", "normal"))
     lines.append((_div(w), "div"))
     for item in receipt.get("items", []):
-        name  = item["product_name"][:name_w - 1]
+        for i, l in enumerate(_wrap(item["product_name"], w, indent=2)):
+            lines.append((l, "normal"))
         qty   = str(item["quantity"])
-        price = f"{item['unit_price']:.2f}"
-        total = f"{item['line_total']:.2f}"
-        lines.append((f"{name:<{name_w}}{qty:>{qty_w}}{price:>{price_w}}{total:>{total_w}}", "normal"))
+        price = _cur(item["unit_price"], currency)
+        gct   = _cur(item.get("gct_amount", 0), currency)
+        total = _cur(item["line_total"], currency)
+        lines.append((f"{qty:>{qty_w}}{price:>{price_w}}{gct:>{gct_w}}{total:>{total_w}}", "normal"))
         if item.get("discount_amount", 0) > 0:
             lines.append((_right("  Discount:", f"-{_cur(item['discount_amount'], currency)}", w), "normal"))
 
@@ -200,15 +216,15 @@ def format_void_lines(receipt: dict, biz: dict,
             lines.append((l, "normal"))
         lines.append(("", "normal"))
 
-    # Original items
-    total_w = 10
-    name_w  = max(10, w - total_w)
-    lines.append((f"{'Item':<{name_w}}{'Total':>{total_w}}", "normal"))
+    # Original items — name on its own line, wrapped rather than
+    # truncated, same as the sale receipt.
+    lines.append((_right("Item", "Total", w), "normal"))
     lines.append((_div(w), "div"))
     for item in receipt.get("items", []):
-        name  = item["product_name"][:name_w - 1]
+        for l in _wrap(item["product_name"], w):
+            lines.append((l, "normal"))
         total = _cur(item["line_total"], currency)
-        lines.append((f"{name:<{name_w}}{total:>{total_w}}", "normal"))
+        lines.append((_right(f"  x{item['quantity']}", total, w), "normal"))
 
     lines.append((_div(w), "div"))
     lines.append((_right("Original Total:", _cur(receipt["total"], currency), w), "normal"))
