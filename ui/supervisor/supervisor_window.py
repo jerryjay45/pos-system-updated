@@ -1127,7 +1127,7 @@ class SupervisorWindow(BaseWindow):
         # ── Print options dialog ──────────────────────────────────────
         dlg = QDialog(self)
         dlg.setWindowTitle("Print Session Report")
-        dlg.setMinimumWidth(460)
+        dlg.setMinimumWidth(520)
         dlg.setStyleSheet(f"background:{WHITE};")
         dl = QVBoxLayout(dlg); dl.setContentsMargins(20, 16, 20, 16); dl.setSpacing(12)
 
@@ -1141,11 +1141,13 @@ class SupervisorWindow(BaseWindow):
         dl.addWidget(type_lbl)
 
         from PyQt6.QtWidgets import QButtonGroup
-        full_rb    = QRadioButton("Full Z-Report  (all items, group totals, GCT, discounts, voids)")
+        full_rb    = QRadioButton("Full Z-Report  (all items, product totals, group totals, GCT, discounts, voids)")
+        products_rb= QRadioButton("Product Summary  (qty and $ sold per product, no per-receipt detail)")
         summary_rb = QRadioButton("Summary Only  (totals, group totals, GCT, discounts, voids)")
         full_rb.setChecked(True)
         btn_group = QButtonGroup(dlg)
         btn_group.addButton(full_rb)
+        btn_group.addButton(products_rb)
         btn_group.addButton(summary_rb)
         rb_style = (
             f"QRadioButton{{color:{DARK_CARD};font-size:12px;spacing:8px;}}"
@@ -1155,10 +1157,11 @@ class SupervisorWindow(BaseWindow):
             f"background:{AMBER};}}"
             f"QRadioButton::indicator:hover{{border:2px solid {AMBER};}}"
         )
-        for rb in (full_rb, summary_rb):
+        for rb in (full_rb, products_rb, summary_rb):
             rb.setStyleSheet(rb_style)
-            rb.setMinimumWidth(420)
+            rb.setMinimumWidth(480)
         dl.addWidget(full_rb)
+        dl.addWidget(products_rb)
         dl.addWidget(summary_rb)
 
         # Copies
@@ -1194,7 +1197,12 @@ class SupervisorWindow(BaseWindow):
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
 
-        report_type = "full" if full_rb.isChecked() else "summary"
+        if full_rb.isChecked():
+            report_type = "full"
+        elif products_rb.isChecked():
+            report_type = "products"
+        else:
+            report_type = "summary"
         copies      = copies_spin.value()
 
         from utils.print_manager import print_session
