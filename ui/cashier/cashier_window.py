@@ -238,6 +238,12 @@ class CashierWindow(BaseWindow):
         input_lay.addWidget(checkout_btn)
         lay.addWidget(input_bar)
 
+        # Match-count label (styled like the price tag tab's search feedback)
+        self.match_lbl = QLabel("")
+        self.match_lbl.setStyleSheet(f"color:{MUTED};font-size:11px;padding:2px 4px 0 4px;")
+        self.match_lbl.setVisible(False)
+        lay.addWidget(self.match_lbl)
+
         # Search results list (inline, hidden by default)
         self.results_list = QListWidget()
         self.results_list.setVisible(False)
@@ -245,7 +251,7 @@ class CashierWindow(BaseWindow):
         self.results_list.setMaximumHeight(200)
         self.results_list.setStyleSheet(f"""
             QListWidget{{background:{WHITE};color:{DARK_CARD};
-            border:2px solid {AMBER};border-top:none;font-size:13px;}}
+            border:1px solid {BORDER};border-radius:8px;font-size:13px;}}
             QListWidget::item{{padding:8px 14px;border-bottom:1px solid {BORDER_LIGHT};}}
             QListWidget::item:selected{{background:{AMBER};color:white;}}
             QListWidget::item:hover{{background:{AMBER_LIGHTEST};}}
@@ -568,18 +574,24 @@ class CashierWindow(BaseWindow):
 
     def _show_results(self, results):
         self.results_list.clear()
+        q = self._clean_barcode(self.search_input.text())
         if not results:
             self._flash_not_found()
             item = QListWidgetItem("  No products found")
             item.setForeground(QColor(MUTED))
             item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsSelectable)
             self.results_list.addItem(item)
+            self.match_lbl.setText(f'0 matches for "{q}"')
         else:
             for p in results:
                 tag = "  [GCT]" if p["gct_applicable"] else "  [No GCT]"
                 item = QListWidgetItem(f"  {p['name']}  —  ${p['selling_price']:.2f}{tag}")
                 item.setData(Qt.ItemDataRole.UserRole, p)
                 self.results_list.addItem(item)
+            n = len(results)
+            self.match_lbl.setText(
+                f'{n} match{"es" if n != 1 else ""} for "{q}"')
+        self.match_lbl.setVisible(True)
         self.results_list.setVisible(True)
 
     def _add_from_results(self, item):
@@ -592,6 +604,8 @@ class CashierWindow(BaseWindow):
         self.search_input.clear()
         self.qty_spinbox.setValue(1)
         self.results_list.setVisible(False)
+        self.match_lbl.setVisible(False)
+        self.match_lbl.clear()
         self.search_input.setFocus()
 
     # ================================================================
