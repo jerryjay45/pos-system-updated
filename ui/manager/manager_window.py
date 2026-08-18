@@ -693,7 +693,8 @@ class ManagerWindow(SupervisorWindow):
                 "No case products found with a linked single product and cost > 0.")
 
     def _build_printers_panel(self):
-        """Printer settings sub-tab."""
+        """Printer settings sub-tab — a single receipt printer, its print
+        mode, and the paper width that drives column formatting."""
         scroll = QScrollArea(); scroll.setWidgetResizable(True)
         scroll.setStyleSheet(f"QScrollArea{{background:{WHITE};border:none;}}")
         fw = QWidget(); fw.setStyleSheet(f"background:{WHITE};")
@@ -736,58 +737,115 @@ class ManagerWindow(SupervisorWindow):
         rb_row.addWidget(refresh_receipt)
         rb.addLayout(rb_row)
         rb_hint = QLabel(
-            "Used for automatic receipt printing at checkout and reprints.  "
+            "Used for every receipt, void, refund, and session print.  "
             "Leave blank to use your OS default printer — no configuration needed."
         )
         rb_hint.setStyleSheet(f"color:{MUTED};font-size:10px;"); rb_hint.setWordWrap(True)
         rb.addWidget(rb_hint)
+
+        # ── Print mode ────────────────────────────────────────────────
+        self.ps_mode_combo = QComboBox()
+        self.ps_mode_combo.setFixedHeight(34)
+        self.ps_mode_combo.setStyleSheet(f"QComboBox{{background:{WHITE};color:{DARK_CARD};border:1px solid {BORDER};border-radius:7px;padding:0 10px;font-size:13px;}}QComboBox:focus{{border-color:{AMBER};}}")
+        self.ps_mode_combo.addItem("Raw Text (dot matrix / thermal)", "raw")
+        self.ps_mode_combo.addItem("Raster / Graphics (normal printer)", "raster")
+        mode_hint = (
+            "Raw Text sends plain text straight to the printer — required for "
+            "dot matrix printers like the TM-U220 on a generic text-only driver. "
+            "Raster renders through the OS driver like a normal document; use it "
+            "for printers that don't accept raw text passthrough."
+        )
+
+        # ── Paper width ───────────────────────────────────────────────
+        self.ps_width_combo = QComboBox()
+        self.ps_width_combo.setFixedHeight(34)
+        self.ps_width_combo.setStyleSheet(f"QComboBox{{background:{WHITE};color:{DARK_CARD};border:1px solid {BORDER};border-radius:7px;padding:0 10px;font-size:13px;}}QComboBox:focus{{border-color:{AMBER};}}")
+        from utils.printer_capabilities import STANDARD_WIDTHS_MM, columns_for_width_mm
+        self._ps_width_labels = {}
+        for mm in STANDARD_WIDTHS_MM:
+            cols = columns_for_width_mm(mm)
+            label = f"{mm}mm  ({cols} columns)"
+            self._ps_width_labels[mm] = label
+            self.ps_width_combo.addItem(label, mm)
+
+        detect_btn = QPushButton("Auto-Detect")
+        detect_btn.setFixedHeight(34)
+        detect_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        detect_btn.setStyleSheet(f"QPushButton{{background:transparent;color:{AMBER};border:1.5px solid {AMBER};border-radius:7px;padding:0 12px;font-size:12px;font-weight:600;}}QPushButton:hover{{background:{AMBER};color:white;}}")
+        detect_btn.clicked.connect(self._printers_detect_width)
+
+        width_box = QFrame()
+        width_box.setStyleSheet(f"background:{WARM_WHITE};border:1px solid {BORDER};border-radius:8px;")
+        wb = QVBoxLayout(width_box); wb.setContentsMargins(14,10,14,10); wb.setSpacing(6)
+        wb_lbl = QLabel("Paper Width")
+        wb_lbl.setStyleSheet(f"color:{DARK_CARD};font-size:12px;font-weight:600;")
+        wb.addWidget(wb_lbl)
+        wb_row = QHBoxLayout(); wb_row.setSpacing(8)
+        wb_row.addWidget(self.ps_width_combo, stretch=1)
+        wb_row.addWidget(detect_btn)
+        wb.addLayout(wb_row)
+        wb_hint = QLabel(
+            "Sets how many characters fit per line on receipts, voids, refunds, "
+            "and session reports. Auto-Detect reads the width from the printer "
+            "driver — it only works reliably if the driver is correctly "
+            "configured for the installed roll, so check the result and adjust "
+            "manually if needed."
+        )
+        wb_hint.setStyleSheet(f"color:{MUTED};font-size:10px;"); wb_hint.setWordWrap(True)
+        wb.addWidget(wb_hint)
 
         # ── Copies ────────────────────────────────────────────────────
         self.ps_copies = QSpinBox(); self.ps_copies.setRange(1,5); self.ps_copies.setValue(1)
         self.ps_copies.setFixedHeight(34); self.ps_copies.setFixedWidth(100)
         self.ps_copies.setStyleSheet(f"QSpinBox{{background:{WHITE};color:{DARK_CARD};border:1px solid {BORDER};border-radius:7px;padding:0 10px;font-size:13px;}}QSpinBox:focus{{border-color:{AMBER};}}")
 
-        # ── Normal printer (future cash tab / delivery invoices) ──────
-        self.ps_normal_combo = QComboBox()
-        self.ps_normal_combo.setFixedHeight(34)
-        self.ps_normal_combo.setEditable(True)
-        self.ps_normal_combo.setStyleSheet(f"QComboBox{{background:{WHITE};color:{DARK_CARD};border:1px solid {BORDER};border-radius:7px;padding:0 10px;font-size:13px;}}QComboBox:focus{{border-color:{AMBER};}}")
-        self.ps_normal_combo.lineEdit().setPlaceholderText("Leave blank to use OS default printer…")
-
-        refresh_normal = QPushButton("↻")
-        refresh_normal.setFixedSize(34, 34)
-        refresh_normal.setToolTip("Refresh printer list")
-        refresh_normal.setCursor(Qt.CursorShape.PointingHandCursor)
-        refresh_normal.setStyleSheet(f"QPushButton{{background:transparent;color:{AMBER};border:1.5px solid {AMBER};border-radius:17px;font-size:14px;font-weight:700;}}QPushButton:hover{{background:{AMBER};color:white;}}")
-        refresh_normal.clicked.connect(lambda: self._printers_refresh_list(self.ps_normal_combo))
-
-        normal_box = QFrame()
-        normal_box.setStyleSheet(f"background:{WARM_WHITE};border:1px solid {BORDER};border-radius:8px;")
-        nb = QVBoxLayout(normal_box); nb.setContentsMargins(14,10,14,10); nb.setSpacing(6)
-        nb_lbl = QLabel("Invoice / Normal Printer")
-        nb_lbl.setStyleSheet(f"color:{DARK_CARD};font-size:12px;font-weight:600;")
-        nb.addWidget(nb_lbl)
-        nb_row = QHBoxLayout(); nb_row.setSpacing(8)
-        nb_row.addWidget(self.ps_normal_combo, stretch=1)
-        nb_row.addWidget(refresh_normal)
-        nb.addLayout(nb_row)
-        nb_hint = QLabel(
-            "Used for delivery order invoices (cash tab — coming soon).  "
-            "Leave blank to use OS default printer."
+        # ── ESC/POS ───────────────────────────────────────────────────
+        self.ps_escpos = QCheckBox("Send real ESC/POS commands (bold headers/totals, real paper cut)")
+        self.ps_escpos.setStyleSheet(
+            f"QCheckBox{{color:{DARK_CARD};font-size:12px;font-weight:500;}}"
+            f"QCheckBox::indicator{{width:16px;height:16px;border:1px solid {BORDER};border-radius:3px;}}"
+            f"QCheckBox::indicator:checked{{background:{AMBER};border-color:{AMBER};}}"
         )
-        nb_hint.setStyleSheet(f"color:{MUTED};font-size:10px;"); nb_hint.setWordWrap(True)
-        nb.addWidget(nb_hint)
+        self.ps_cash_drawer = QCheckBox("Open cash drawer on cash/split-tender sales")
+        self.ps_cash_drawer.setStyleSheet(self.ps_escpos.styleSheet())
+
+        escpos_box = QFrame()
+        escpos_box.setStyleSheet(f"background:{WARM_WHITE};border:1px solid {BORDER};border-radius:8px;")
+        eb = QVBoxLayout(escpos_box); eb.setContentsMargins(14,10,14,10); eb.setSpacing(8)
+        eb_lbl = QLabel("ESC/POS Commands")
+        eb_lbl.setStyleSheet(f"color:{DARK_CARD};font-size:12px;font-weight:600;")
+        eb.addWidget(eb_lbl)
+        eb.addWidget(self.ps_escpos)
+        eb.addWidget(self.ps_cash_drawer)
+        eb_hint = QLabel(
+            "Raw Text mode only. Needs a printer whose firmware understands ESC/POS "
+            "(e.g. TM-U220) — it degrades to plain text automatically if the "
+            "python-escpos library isn't installed. The drawer must be wired "
+            "through the receipt printer for the kick to work."
+        )
+        eb_hint.setStyleSheet(f"color:{MUTED};font-size:10px;"); eb_hint.setWordWrap(True)
+        eb.addWidget(eb_hint)
+
+        def _sync_escpos_enabled():
+            raw = self.ps_mode_combo.currentData() != "raster"
+            self.ps_escpos.setEnabled(raw)
+            self.ps_cash_drawer.setEnabled(raw and self.ps_escpos.isChecked())
+        self.ps_mode_combo.currentIndexChanged.connect(_sync_escpos_enabled)
+        self.ps_escpos.toggled.connect(_sync_escpos_enabled)
+        self._sync_escpos_enabled = _sync_escpos_enabled
 
         # ── Label printer ─────────────────────────────────────────────
         self.ps_label = self._finp("e.g. Zebra_GK420d")
 
         # ── Layout ────────────────────────────────────────────────────
         lay.addWidget(receipt_box)
+        lay.addWidget(ps_row("Print Mode", self.ps_mode_combo, mode_hint))
+        lay.addWidget(width_box)
+        lay.addWidget(escpos_box)
         copies_lbl = QLabel("Receipt Copies")
         copies_lbl.setStyleSheet(f"color:{DARK_CARD};font-size:12px;font-weight:600;")
         copies_row = QHBoxLayout(); copies_row.addWidget(self.ps_copies); copies_row.addStretch()
         lay.addWidget(copies_lbl); lay.addLayout(copies_row)
-        lay.addWidget(normal_box)
         lay.addWidget(ps_row("Label Printer", self.ps_label, "Used for shelf price labels"))
 
         lay.addStretch()
@@ -833,31 +891,64 @@ class ManagerWindow(SupervisorWindow):
             self.printers_feedback.setText(f"Could not list printers: {e}")
             self.printers_feedback.setStyleSheet(f"color:{RED};font-size:11px;font-weight:600;")
 
+    def _printers_select_width(self, width_mm: int):
+        """Select the closest standard width entry in the paper-width combo."""
+        from utils.printer_capabilities import STANDARD_WIDTHS_MM
+        closest = min(STANDARD_WIDTHS_MM, key=lambda mm: abs(mm - width_mm))
+        idx = self.ps_width_combo.findData(closest)
+        if idx >= 0:
+            self.ps_width_combo.setCurrentIndex(idx)
+
+    def _printers_detect_width(self):
+        """Query the printer driver for its configured paper width."""
+        from utils.printer_capabilities import detect_paper_width_mm
+        name = self.ps_receipt_combo.currentText().strip()
+        detected = detect_paper_width_mm(name)
+        if detected:
+            self._printers_select_width(detected)
+            self.printers_feedback.setText(f"✓  Detected {detected}mm from the printer driver.")
+            self.printers_feedback.setStyleSheet(f"color:{GREEN};font-size:11px;font-weight:600;")
+        else:
+            self.printers_feedback.setText(
+                "Could not detect paper width from the driver — set it manually.")
+            self.printers_feedback.setStyleSheet(f"color:{RED};font-size:11px;font-weight:600;")
+
     def _printers_load(self):
         from core.db_config import get
         self.ps_copies.setValue(int(get("receipt_copies", "1") or "1"))
         self.ps_label.setText(get("label_printer_name", ""))
         self._printers_refresh_list(self.ps_receipt_combo)
-        self._printers_refresh_list(self.ps_normal_combo)
-        # Restore saved selections
-        for combo, key in [(self.ps_receipt_combo, "thermal_printer_name"),
-                           (self.ps_normal_combo,  "normal_printer_name")]:
-            saved = get(key, "")
-            if saved:
-                idx = combo.findText(saved)
-                if idx >= 0:
-                    combo.setCurrentIndex(idx)
-                else:
-                    combo.setEditText(saved)
+
+        saved = get("receipt_printer_name", "")
+        if saved:
+            idx = self.ps_receipt_combo.findText(saved)
+            if idx >= 0:
+                self.ps_receipt_combo.setCurrentIndex(idx)
+            else:
+                self.ps_receipt_combo.setEditText(saved)
+
+        saved_mode = get("receipt_printer_mode", "raw")
+        idx = self.ps_mode_combo.findData(saved_mode)
+        self.ps_mode_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+        saved_width = int(get("receipt_paper_width_mm", "76") or "76")
+        self._printers_select_width(saved_width)
+
+        self.ps_escpos.setChecked(get("receipt_printer_escpos", "0").strip() == "1")
+        self.ps_cash_drawer.setChecked(get("cash_drawer_kick_on_cash_sale", "0").strip() == "1")
+        self._sync_escpos_enabled()
 
     def _printers_save(self):
         try:
             from core.db_config import set_many
             set_many({
-                "thermal_printer_name": self.ps_receipt_combo.currentText().strip(),
-                "normal_printer_name":  self.ps_normal_combo.currentText().strip(),
-                "label_printer_name":   self.ps_label.text().strip(),
-                "receipt_copies":       str(self.ps_copies.value()),
+                "receipt_printer_name":   self.ps_receipt_combo.currentText().strip(),
+                "receipt_printer_mode":   self.ps_mode_combo.currentData(),
+                "receipt_paper_width_mm": str(self.ps_width_combo.currentData()),
+                "label_printer_name":     self.ps_label.text().strip(),
+                "receipt_copies":         str(self.ps_copies.value()),
+                "receipt_printer_escpos": "1" if self.ps_escpos.isChecked() else "0",
+                "cash_drawer_kick_on_cash_sale": "1" if self.ps_cash_drawer.isChecked() else "0",
             })
             self.printers_feedback.setText("✓  Printer settings saved.")
             self.printers_feedback.setStyleSheet(f"color:{GREEN};font-size:11px;font-weight:600;")
@@ -866,28 +957,45 @@ class ManagerWindow(SupervisorWindow):
             self.printers_feedback.setStyleSheet(f"color:{RED};font-size:11px;font-weight:600;")
 
     def _printers_test(self):
-        """Send a test print to the receipt printer."""
+        """Send a test print to the receipt printer, using the selected
+        mode — real ESC/POS bytes (bold banner, cut, optional drawer kick)
+        if enabled, otherwise plain text."""
         from utils.thermal_printer import ThermalPrinter, PrinterError
         name = self.ps_receipt_combo.currentText().strip()
+        mode = self.ps_mode_combo.currentData()
+        width = self.ps_width_combo.currentData() or 76
+        use_escpos = mode != "raster" and self.ps_escpos.isChecked()
+        kick_drawer = use_escpos and self.ps_cash_drawer.isChecked()
+        from utils.printer_capabilities import columns_for_width_mm
+        cols = columns_for_width_mm(width)
         self.printers_feedback.setText("Sending test print…")
         self.printers_feedback.setStyleSheet(f"color:{MUTED};font-size:11px;font-weight:600;")
         from PyQt6.QtWidgets import QApplication
         QApplication.processEvents()
-        test_text = (
-            "\n"
-            "----------------------------------------\n"
-            "        MERCHANT POS SYSTEMS\n"
-            "          ** TEST PRINT **\n"
-            "----------------------------------------\n"
-            "  Printer connected successfully\n"
-            f"  Printer: {name or 'OS Default'}\n"
-            "----------------------------------------\n"
-            "\n\n\n"
-        )
+        div = "-" * cols
+        lines = [
+            ("MERCHANT POS SYSTEMS", "biz_name"),
+            ("** TEST PRINT **", "title"),
+            (div, "div"),
+            ("Printer connected successfully", "normal"),
+            (f"Printer: {name or 'OS Default'}", "normal"),
+            (f"Mode: {'Raw Text' if mode != 'raster' else 'Raster'}", "normal"),
+            (f"ESC/POS: {'On' if use_escpos else 'Off'}", "normal"),
+            (f"Width: {width}mm ({cols} cols)", "normal"),
+            (div, "div"),
+        ]
+        test_text = "\n" + "\n".join(t for t, _k in lines) + "\n\n\n\n"
         try:
-            printer = ThermalPrinter(name, copies=1)
+            printer = ThermalPrinter(name, copies=1, mode=mode)
+            data = None
+            if use_escpos:
+                from utils.escpos_builder import build_escpos_bytes
+                data = build_escpos_bytes(lines, cut=True, cash_drawer=kick_drawer)
             with printer as p:
-                p.print_text(test_text)
+                if data is not None:
+                    p.print_bytes(data)
+                else:
+                    p.print_text(test_text)
             self.printers_feedback.setText("✓  Test print sent successfully.")
             self.printers_feedback.setStyleSheet(f"color:{GREEN};font-size:11px;font-weight:600;")
         except PrinterError as e:

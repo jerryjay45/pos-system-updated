@@ -72,12 +72,16 @@ _DEFAULTS = {
     # Quick-amount buttons in checkout dialog (comma-separated)
     "checkout_quick_amounts": "2,5,10,20,50,100",
 
-    # Printer
-    "thermal_printer_name":  "",           # receipt printer name (blank = OS default)
-    "normal_printer_name":   "",
-    "normal_paper_size":     "A4",
-    "receipt_copies":        "1",
-    "label_printer_name":    "",
+    # Printer — single receipt printer, used for all receipt/void/refund/
+    # session printing. See utils/printer_capabilities.py for the paper
+    # width → column table and utils/thermal_printer.py for print modes.
+    "receipt_printer_name":   "",          # blank = OS default printer
+    "receipt_printer_mode":   "raw",       # "raw" (dot matrix / thermal passthrough) or "raster" (QPrinter graphics)
+    "receipt_paper_width_mm": "76",        # physical paper width in mm — drives column count
+    "receipt_copies":         "1",
+    "label_printer_name":     "",
+    "receipt_printer_escpos": "0",         # "1" = send real ESC/POS commands (bold headers/totals, paper cut) instead of plain ASCII — raw mode only, needs an ESC/POS-capable printer
+    "cash_drawer_kick_on_cash_sale": "0",  # "1" = send the cash-drawer-open command after printing a cash/split-tender sale receipt — ESC/POS mode only
 
     # PostgreSQL external DB (mirrors config.py but persisted here)
     "pg_enabled":            "0",

@@ -14,12 +14,18 @@ print_label(product, copies, printer, parent) — stub for future cash tab
 Routing
 -------
 Auto-print (receipt, reprint):
-  Uses ThermalPrinter (QPrinter) → configured receipt printer or OS default.
-  No dialog shown.
+  Uses ThermalPrinter (raw passthrough or raster, per receipt_printer_mode)
+  → configured receipt printer or OS default. No dialog shown.
+  In raw mode, if receipt_printer_escpos is enabled, sends real ESC/POS
+  commands (bold headers/totals, paper cut, optional cash-drawer kick)
+  via utils.escpos_builder instead of plain ASCII text.
 
 Dialog-print (void, refund, session):
-  Uses QPrintPreviewDialog — user sees preview and can pick any printer.
-  Defaults to OS default printer.
+  Raw mode:    sends raw text/ESC-POS straight to the configured receipt
+               printer, same as auto-print (no dialog — raw printers
+               can't show one). Never kicks the cash drawer.
+  Raster mode: uses QPrintPreviewDialog — user sees a preview and can pick
+               any printer. Defaults to OS default printer.
 
 All functions:
   - Return True on success, False on failure/cancel
@@ -58,89 +64,38 @@ def _safe_num(receipt_number: str) -> str:
     return receipt_number.replace("#", "").replace("/", "-").strip()
 
 
-def _raw_text_print(text: str, printer_name: str = "", parent=None) -> bool:
+def _auto_print(text: str, parent=None, lines: list | None = None,
+                cash_drawer: bool = False) -> bool:
     """
-    Send plain text directly to the printer spooler — bypasses QPrinter's
-    raster rendering entirely. Required for dot matrix printers using
-    generic text-only drivers (e.g. Epson TM-U220 via Windows generic driver).
+    Print without a dialog using the configured receipt printer
+    (raw passthrough or raster, per receipt_printer_mode).
 
-    Windows: uses win32print to open a raw print job.
-    Linux:   uses `lpr` subprocess with -l (passthrough) flag.
-    Falls back to _auto_print if neither is available.
-    """
-    import sys
-    import platform
-
-    # Normalise line endings for dot matrix (CR+LF) and add form feed
-    lines = text.replace("\r\n", "\n").replace("\r", "\n")
-    raw   = (lines + "\n\f").encode("ascii", errors="replace")
-
-    if platform.system() == "Windows":
-        try:
-            import win32print
-            pname = printer_name or win32print.GetDefaultPrinter()
-            hprinter = win32print.OpenPrinter(pname)
-            try:
-                hjob = win32print.StartDocPrinter(hprinter, 1,
-                    ("Receipt", None, "RAW"))
-                try:
-                    win32print.StartPagePrinter(hprinter)
-                    win32print.WritePrinter(hprinter, raw)
-                    win32print.EndPagePrinter(hprinter)
-                finally:
-                    win32print.EndDocPrinter(hprinter)
-            finally:
-                win32print.ClosePrinter(hprinter)
-            return True
-        except ImportError:
-            print("[PrintManager] win32print not installed — falling back")
-        except Exception as e:
-            print(f"[PrintManager] win32print error: {e}")
-            if parent:
-                from PyQt6.QtWidgets import QMessageBox
-                QMessageBox.warning(parent, "Printer Error", str(e))
-            return False
-
-    else:
-        # Linux / macOS — use lpr with passthrough flag
-        try:
-            import subprocess
-            cmd = ["lpr", "-l"]
-            if printer_name:
-                cmd += ["-P", printer_name]
-            proc = subprocess.run(cmd, input=raw,
-                                  capture_output=True, timeout=10)
-            if proc.returncode != 0:
-                err = proc.stderr.decode(errors="replace")
-                print(f"[PrintManager] lpr error: {err}")
-                return False
-            return True
-        except Exception as e:
-            print(f"[PrintManager] lpr error: {e}")
-            return False
-
-
-def _auto_print(text: str, parent=None) -> bool:
-    """
-    Print without a dialog using the configured receipt printer.
-    Routes:
-      1. raw_text path  — if normal_printer_name is set and platform supports it
-      2. thermal path   — ESC/POS via ThermalPrinter
-      3. fallback        — silent failure, text copy already saved
+    lines        — optional (text, kind) list from a *_lines() formatter
+                   function. Only used in raw mode when
+                   receipt_printer_escpos is enabled — builds a real
+                   ESC/POS byte stream instead of plain text. Falls
+                   back to plain text if python-escpos isn't installed
+                   or lines wasn't provided.
+    cash_drawer  — send a cash-drawer-open pulse (ESC/POS mode only).
+                   Only ever pass True for a completed sale receipt.
     """
     from core.db_config import get as cfg_get
-    normal_name  = cfg_get("normal_printer_name",  "").strip()
-    thermal_name = cfg_get("thermal_printer_name", "").strip()
-
-    # Generic text / dot matrix path
-    if normal_name:
-        return _raw_text_print(text, normal_name, parent)
-
-    # Thermal / ESC-POS path
     from utils.thermal_printer import ThermalPrinter, PrinterError
+
+    mode        = cfg_get("receipt_printer_mode", "raw").strip()
+    use_escpos  = (mode == "raw" and lines is not None
+                  and cfg_get("receipt_printer_escpos", "0").strip() == "1")
+
     try:
         with ThermalPrinter.from_config() as p:
-            p.print_text(text)
+            data = None
+            if use_escpos:
+                from utils.escpos_builder import build_escpos_bytes
+                data = build_escpos_bytes(lines, cut=True, cash_drawer=cash_drawer)
+            if data is not None:
+                p.print_bytes(data)
+            else:
+                p.print_text(text)
         return True
     except PrinterError as e:
         print(f"[PrintManager] Auto-print error: {e}")
@@ -156,15 +111,17 @@ def _auto_print(text: str, parent=None) -> bool:
         return False
 
 
-def _dialog_print(text: str, parent=None) -> bool:
+def _dialog_print(text: str, parent=None, lines: list | None = None) -> bool:
     """
-    Print via dialog. If normal_printer_name is set, sends raw text directly
-    (dot matrix / generic text driver). Otherwise shows QPrintPreviewDialog.
+    Print via dialog when possible. Raw mode has no preview to show (a raw
+    spooler job isn't renderable), so it prints straight to the configured
+    receipt printer, same as auto-print (never kicks the cash drawer —
+    that's reserved for completed sales). Raster mode shows a
+    QPrintPreviewDialog so the user can preview and pick any printer.
     """
     from core.db_config import get as cfg_get
-    normal_name = cfg_get("normal_printer_name", "").strip()
-    if normal_name:
-        return _raw_text_print(text, normal_name, parent)
+    if cfg_get("receipt_printer_mode", "raw").strip() != "raster":
+        return _auto_print(text, parent, lines=lines, cash_drawer=False)
 
     try:
         from PyQt6.QtPrintSupport import QPrinter, QPrintPreviewDialog
@@ -224,11 +181,18 @@ def _dialog_print(text: str, parent=None) -> bool:
 def print_receipt(receipt: dict, parent=None) -> bool:
     """Auto-print sale receipt at checkout — no dialog."""
     try:
-        from utils.receipt_formatter import format_sale
+        from core.db_config import get as cfg_get
+        from utils.receipt_formatter import format_sale, format_sale_lines
         biz, currency = _get_biz_and_currency()
-        text = format_sale(receipt, biz, currency)
+        lines = format_sale_lines(receipt, biz, currency)
+        text  = "\n".join(t for t, _k in lines)
         _save_text(f"receipt_{_safe_num(receipt['receipt_number'])}_{_stamp()}.txt", text)
-        return _auto_print(text, parent)
+
+        cash_drawer = (
+            cfg_get("cash_drawer_kick_on_cash_sale", "0").strip() == "1"
+            and receipt["payment_method"] in ("cash", "split")
+        )
+        return _auto_print(text, parent, lines=lines, cash_drawer=cash_drawer)
     except Exception as e:
         print(f"[PrintManager] print_receipt error: {e}")
         return False
@@ -238,14 +202,15 @@ def print_void(receipt: dict, refund: dict,
                voided_by_user: dict = None, parent=None) -> bool:
     """Print void notice via preview dialog."""
     try:
-        from utils.receipt_formatter import format_void
+        from utils.receipt_formatter import format_void_lines
         biz, currency = _get_biz_and_currency()
         voided_by = voided_by_user.get("full_name", "") if voided_by_user else ""
         reason    = refund.get("reason", "") if refund else ""
-        text = format_void(receipt, biz, voided_by=voided_by,
-                           reason=reason, currency=currency)
+        lines = format_void_lines(receipt, biz, voided_by=voided_by,
+                                  reason=reason, currency=currency)
+        text  = "\n".join(t for t, _k in lines)
         _save_text(f"void_{_safe_num(receipt['receipt_number'])}_{_stamp()}.txt", text)
-        return _dialog_print(text, parent)
+        return _dialog_print(text, parent, lines=lines)
     except Exception as e:
         print(f"[PrintManager] print_void error: {e}")
         return False
@@ -255,17 +220,18 @@ def print_refund(receipt: dict, refund: dict,
                  refunded_by_user: dict = None, parent=None) -> bool:
     """Print refund receipt via preview dialog."""
     try:
-        from utils.receipt_formatter import format_refund
+        from utils.receipt_formatter import format_refund_lines
         biz, currency = _get_biz_and_currency()
         refunded_by = refunded_by_user.get("full_name", "") if refunded_by_user else ""
         reason      = refund.get("reason", "") if refund else ""
         amount      = refund.get("amount", receipt.get("total", 0))
         refund_type = refund.get("refund_type", "full") if refund else "full"
-        text = format_refund(receipt, biz, refund_amount=amount,
-                             refund_type=refund_type, refunded_by=refunded_by,
-                             reason=reason, currency=currency)
+        lines = format_refund_lines(receipt, biz, refund_amount=amount,
+                                    refund_type=refund_type, refunded_by=refunded_by,
+                                    reason=reason, currency=currency)
+        text  = "\n".join(t for t, _k in lines)
         _save_text(f"refund_{_safe_num(receipt['receipt_number'])}_{_stamp()}.txt", text)
-        return _dialog_print(text, parent)
+        return _dialog_print(text, parent, lines=lines)
     except Exception as e:
         print(f"[PrintManager] print_refund error: {e}")
         return False
@@ -275,7 +241,7 @@ def print_session(session: dict, report_type: str = "full",
                   copies: int = 1, parent=None) -> bool:
     """Print session Z-report via preview dialog."""
     try:
-        from utils.receipt_formatter import format_session
+        from utils.receipt_formatter import format_session_lines
         from core.db_checkout import (
             session_totals, session_group_totals,
             session_voided_receipts, get_session_receipts,
@@ -305,15 +271,16 @@ def print_session(session: dict, report_type: str = "full",
             u = get_user_by_id(session["closed_by"])
             closed_by = u["full_name"] if u else ""
 
-        text = format_session(
+        lines = format_session_lines(
             session, totals, cashier_name, biz,
             opened_by=opened_by, closed_by=closed_by,
             currency=currency, report_type=report_type,
             group_totals=grp_totals, voided_receipts=voided,
             all_receipts=all_receipts,
         )
+        text = "\n".join(t for t, _k in lines)
         _save_text(f"session_{session['id']:04d}_{report_type}_{_stamp()}.txt", text)
-        return _dialog_print(text, parent)
+        return _dialog_print(text, parent, lines=lines)
 
     except Exception as e:
         print(f"[PrintManager] print_session error: {e}")
@@ -321,7 +288,8 @@ def print_session(session: dict, report_type: str = "full",
 
 
 def reprint_receipt(receipt_number: str, parent=None) -> bool:
-    """Reprint a past receipt — auto-prints to receipt printer, no dialog."""
+    """Reprint a past receipt — auto-prints to receipt printer, no dialog.
+    Never kicks the cash drawer — that only fires on the original sale."""
     try:
         from core.db_checkout import get_receipt_by_number
         receipt = get_receipt_by_number(receipt_number)
@@ -331,11 +299,12 @@ def reprint_receipt(receipt_number: str, parent=None) -> bool:
                 QMessageBox.warning(parent, "Not Found",
                     f"Receipt {receipt_number} not found.")
             return False
-        from utils.receipt_formatter import format_sale
+        from utils.receipt_formatter import format_sale_lines
         biz, currency = _get_biz_and_currency()
-        text = format_sale(receipt, biz, currency)
+        lines = format_sale_lines(receipt, biz, currency)
+        text  = "\n".join(t for t, _k in lines)
         _save_text(f"reprint_{_safe_num(receipt['receipt_number'])}_{_stamp()}.txt", text)
-        return _auto_print(text, parent)
+        return _auto_print(text, parent, lines=lines, cash_drawer=False)
     except Exception as e:
         print(f"[PrintManager] reprint_receipt error: {e}")
         return False

@@ -351,13 +351,14 @@ class _PrinterPage(QWidget):
 
         # Receipt printer
         lay.addWidget(_field_label("Receipt Printer"))
-        self.thermal = _input("e.g. 192.168.1.100  or  /dev/usb/lp0  or  USB001", uppercase=False)
+        self.thermal = _input("e.g. EPSON TM-U220 — as it appears in your OS printer list", uppercase=False)
         lay.addWidget(self.thermal)
         hint1 = QLabel(
-            "Enter an IP address for network printers, a device path for USB/serial,\n"
-            "or leave blank to skip."
+            "Enter the printer's name exactly as installed in your OS, or leave "
+            "blank to use the OS default printer. You can fine-tune the print "
+            "mode and paper width later in Manager → Settings → Printers."
         )
-        hint1.setStyleSheet(f"color:{MUTED};font-size:10px;")
+        hint1.setStyleSheet(f"color:{MUTED};font-size:10px;"); hint1.setWordWrap(True)
         lay.addWidget(hint1)
 
         lay.addSpacing(8)
@@ -382,7 +383,7 @@ class _PrinterPage(QWidget):
 
     def collect(self) -> dict:
         return {
-            "thermal_printer_name": self.thermal.text().strip(),
+            "receipt_printer_name": self.thermal.text().strip(),
             "receipt_copies":       str(int(self.copies.value())),
         }
 
@@ -607,7 +608,7 @@ class SetupWizard(QDialog):
             self._pages[last].set_summary(
                 biz.get("name", "—"),
                 mgr.get("username", "—").upper(),
-                ptr.get("thermal_printer_name", ""),
+                ptr.get("receipt_printer_name", ""),
                 tid.get("terminal_id", ""),
             )
 
@@ -662,8 +663,8 @@ class SetupWizard(QDialog):
             elif page_idx == 5 and data:   # Printer
                 from core.db_config import set_many
                 settings = {}
-                if data.get("thermal_printer_name"):
-                    settings["thermal_printer_name"] = data["thermal_printer_name"]
+                if data.get("receipt_printer_name"):
+                    settings["receipt_printer_name"] = data["receipt_printer_name"]
                 if data.get("receipt_copies"):
                     settings["receipt_copies"] = data["receipt_copies"]
                 if settings:
