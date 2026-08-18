@@ -6,6 +6,9 @@ Adapted from the standalone DBF Price Tag Printer — same drawing engine.
 
 from __future__ import annotations
 
+import os
+from datetime import datetime
+
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFrame, QLabel, QPushButton,
     QLineEdit, QComboBox, QSpinBox, QTableWidget, QTableWidgetItem,
@@ -23,6 +26,7 @@ from ui.shared.theme import (
 )
 from core.db_products import get_products, count_products, get_discount_levels
 from core.db_config import get as cfg_get, gct_rate
+from config import LABEL_DIR
 
 # ── Label / page size catalogue ───────────────────────────────────────────────
 _LABEL_SIZES = [
@@ -592,8 +596,13 @@ class PriceTagTab(QWidget):
             cols = self.cols_spin.value()
 
             if save_pdf:
+                # Labels are filed by the date they're printed: labels/<YYYY-MM-DD>/
+                date_folder = os.path.join(LABEL_DIR, datetime.now().strftime("%Y-%m-%d"))
+                os.makedirs(date_folder, exist_ok=True)
+                default_name = f"labels_{datetime.now().strftime('%H%M%S')}.pdf"
+                default_path = os.path.join(date_folder, default_name)
                 pdf_path, _ = QFileDialog.getSaveFileName(
-                    self, "Save Labels as PDF", "labels.pdf", "PDF Files (*.pdf)")
+                    self, "Save Labels as PDF", default_path, "PDF Files (*.pdf)")
                 if not pdf_path: return
                 printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
                 printer.setOutputFileName(pdf_path)
