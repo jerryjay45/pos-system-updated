@@ -91,6 +91,23 @@ def _item_value_cols(width: int) -> tuple[int, int, int, int]:
 def _cur(amount: float, symbol: str = "$") -> str:
     return f"{symbol}{amount:.2f}"
 
+# Column widths for the "    {name} {qty}x {total}" rows used by both the
+# LINE ITEMS and PRODUCT SUMMARY sections of the Z-report. QTY_W/TOTAL_W
+# are sized generously (qty up to 9999, total up to $99,999.99) because
+# PRODUCT SUMMARY sums across every receipt in the shift, not just one
+# line — a per-item column width (e.g. 3/7) that looks fine for a single
+# sale silently overflows once quantities/totals are aggregated.
+_ROW_INDENT = 4
+_QTY_W = 4
+_TOTAL_W = 9
+
+def _item_row(name: str, qty, total_str: str, width: int) -> str:
+    """Format one '<name> <qty>x <total>' row, sized to fit `width`."""
+    overhead = _ROW_INDENT + 1 + _QTY_W + 1 + 1 + _TOTAL_W  # + 2 spaces + "x"
+    name_w = max(10, width - overhead)
+    indent = " " * _ROW_INDENT
+    return f"{indent}{name[:name_w]:<{name_w}} {str(qty):>{_QTY_W}}x {total_str:>{_TOTAL_W}}"
+
 def _ts(dt_str: str) -> str:
     """Format a datetime string to 'DD/MM/YYYY HH:MM'."""
     try:
@@ -350,16 +367,13 @@ def format_session_lines(session: dict, totals: dict, cashier_name: str,
     if report_type == "full" and all_receipts:
         lines.append((_center("LINE ITEMS", w), "title"))
         lines.append((_div(w, "-"), "div"))
-        item_name_w = max(10, w - 16)
         for receipt in all_receipts:
             if receipt.get("status") != "completed":
                 continue
             lines.append((f"  {receipt['receipt_number']}  {_ts(receipt['created_at'])}", "normal"))
             for item in receipt.get("items", []):
-                name  = item["product_name"][:item_name_w]
-                qty   = str(item["quantity"])
                 total = _cur(item["line_total"], currency)
-                lines.append((f"    {name:<{item_name_w}} {qty:>3}x {total:>7}", "normal"))
+                lines.append((_item_row(item["product_name"], item["quantity"], total, w), "normal"))
             lines.append((_right("  Receipt Total:", _cur(receipt["total"], currency), w), "normal"))
             lines.append(("", "normal"))
         lines.append((_div(w), "div"))
@@ -387,6 +401,37 @@ def format_session_lines(session: dict, totals: dict, cashier_name: str,
             label = f"{g['group_name']} ({g['item_count']} items)"
             lines.append((_right(label, _cur(g["total_sales"], currency), w), "normal"))
         lines.append((_div(w), "div"))
+
+    # ── Product summary — one line per unique product sold during the
+    # session, with total qty and total $, regardless of how many
+    # separate receipts it appeared on. This sits alongside SALES BY
+    # GROUP (which aggregates at category level) and the LINE ITEMS
+    # detail above (which is per-receipt) — the three views answer
+    # different questions and none replaces the others.
+    if report_type == "full" and all_receipts:
+        product_totals: dict[str, dict] = {}
+        for receipt in all_receipts:
+            if receipt.get("status") != "completed":
+                continue
+            for item in receipt.get("items", []):
+                name = item["product_name"]
+                agg = product_totals.setdefault(name, {"qty": 0, "total": 0.0})
+                agg["qty"] += item["quantity"]
+                agg["total"] += item["line_total"]
+
+        if product_totals:
+            lines.append((_center("PRODUCT SUMMARY", w), "title"))
+            lines.append((_div(w, "-"), "div"))
+            # Sorted by total $ descending — best sellers first. Swap the
+            # key to `name` for alphabetical if that's more useful for
+            # reconciliation.
+            for name in sorted(product_totals,
+                                key=lambda n: product_totals[n]["total"],
+                                reverse=True):
+                agg   = product_totals[name]
+                total = _cur(agg["total"], currency)
+                lines.append((_item_row(name, agg["qty"], total, w), "normal"))
+            lines.append((_div(w), "div"))
 
     # ── Voided transactions ────────────────────────────────────────────
     if voided_receipts:
