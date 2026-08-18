@@ -94,9 +94,12 @@ class SupervisorWindow(BaseWindow):
         self.tabs.addTab(self._build_products_tab(),     "📦  Products")
         self.tabs.addTab(self._build_reports_tab(),      "📊  Reports")
         self.tabs.addTab(self._build_transactions_tab(), "🧾  Transactions")
-        from ui.supervisor.void_refund_tab import VoidRefundTab
-        self._void_refund_tab = VoidRefundTab(user=self.user, parent=self)
-        self.tabs.addTab(self._void_refund_tab, "↩  Void / Refund")
+        # TODO: Void/Refund tab pulled out early — added before the rest of
+        # the workflow was stable. Underlying module (ui/supervisor/
+        # void_refund_tab.py) is untouched; re-enable by uncommenting below.
+        # from ui.supervisor.void_refund_tab import VoidRefundTab
+        # self._void_refund_tab = VoidRefundTab(user=self.user, parent=self)
+        # self.tabs.addTab(self._void_refund_tab, "↩  Void / Refund")
         self.tabs.addTab(self._build_stock_tab(),        "📊  Stock")
         self.tabs.addTab(self._build_price_tag_tab(),    "🏷  Price Tags")
         self.tabs.addTab(self._build_quickkeys_tab(),    "⌨  Quick Keys")
@@ -334,6 +337,49 @@ class SupervisorWindow(BaseWindow):
         self.f_case_qty.setStyleSheet(self._input_style())
         self.f_case_qty.valueChanged.connect(self._on_case_parent_changed)
         cb_lay.addWidget(self.f_case_qty)
+
+        # ── Restock via case ─────────────────────────────────────────
+        # Case products don't hold their own stock — it's derived from
+        # the parent single product. This lets a supervisor log a case
+        # delivery directly (e.g. "received 5 cases") and have it convert
+        # to the parent's unit stock automatically, instead of having to
+        # do the arithmetic and adjust the parent product by hand.
+        cb_lay.addWidget(_divider())
+        cb_lay.addWidget(self._flabel("Restock via Case"))
+        self.case_stock_lbl = QLabel("Select a parent product to see stock.")
+        self.case_stock_lbl.setStyleSheet(f"color:{DARK_CARD};font-size:11px;font-weight:600;")
+        self.case_stock_lbl.setWordWrap(True)
+        cb_lay.addWidget(self.case_stock_lbl)
+        case_restock_row = QHBoxLayout(); case_restock_row.setSpacing(6)
+        self.case_restock_qty = QSpinBox()
+        self.case_restock_qty.setMinimum(1); self.case_restock_qty.setMaximum(9999)
+        self.case_restock_qty.setStyleSheet(self._input_style())
+        case_restock_row.addWidget(self.case_restock_qty, stretch=1)
+        self.case_restock_add_btn = QPushButton("＋  Add Cases")
+        self.case_restock_add_btn.setFixedHeight(30); self.case_restock_add_btn.setEnabled(False)
+        self.case_restock_add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.case_restock_add_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{GREEN};border:1.5px solid {GREEN};"
+            f"border-radius:6px;font-size:11px;font-weight:700;padding:0 8px;}}"
+            f"QPushButton:hover{{background:{GREEN};color:white;}}"
+            f"QPushButton:disabled{{color:{MUTED};border-color:{BORDER_LIGHT};}}")
+        self.case_restock_add_btn.clicked.connect(self._case_restock_add)
+        self.case_restock_remove_btn = QPushButton("−  Remove")
+        self.case_restock_remove_btn.setFixedHeight(30); self.case_restock_remove_btn.setEnabled(False)
+        self.case_restock_remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.case_restock_remove_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{RED};border:1.5px solid {RED};"
+            f"border-radius:6px;font-size:11px;font-weight:700;padding:0 8px;}}"
+            f"QPushButton:hover{{background:{RED};color:white;}}"
+            f"QPushButton:disabled{{color:{MUTED};border-color:{BORDER_LIGHT};}}")
+        self.case_restock_remove_btn.clicked.connect(self._case_restock_remove)
+        case_restock_row.addWidget(self.case_restock_add_btn)
+        case_restock_row.addWidget(self.case_restock_remove_btn)
+        cb_lay.addLayout(case_restock_row)
+        self.case_restock_feedback = QLabel("")
+        self.case_restock_feedback.setStyleSheet(f"font-size:10px;font-weight:600;")
+        cb_lay.addWidget(self.case_restock_feedback)
+
         lay.addWidget(self.case_box)
 
         # ── Section 5: Stock (edit only) ──────────────────────────────
@@ -494,6 +540,8 @@ class SupervisorWindow(BaseWindow):
         self.f_case_parent.clear_value()
         self.f_case_parent.exclude_id(None)
         self.f_case_cost_hint.setText("")
+        self.case_restock_qty.setValue(1)
+        self.case_restock_feedback.setText("")
         self.f_group.setEnabled(True)
         self.f_group.setToolTip("")
 
@@ -556,12 +604,13 @@ class SupervisorWindow(BaseWindow):
             for i in range(self.f_disc2.count()):
                 if self.f_disc2.itemData(i) == p.get("discount_level2"):
                     self.f_disc2.setCurrentIndex(i); break
-        # Show stock section with current level
+        # Show stock section with current level (only for non-case products)
         stock = p.get("stock", 0)
         self.stock_current_lbl.setText(f"Current stock: {stock} unit{'s' if stock != 1 else ''}")
         self.stock_qty.setValue(1)
         self.stock_reason.setCurrentIndex(0)
-        self.stock_section.setVisible(True)
+        # Stock section is hidden for case products — they use "Restock via Case" instead
+        self.stock_section.setVisible(not p["is_case"])
 
     def _save_product(self):
         barcode = self.f_barcode[1].text().strip()
@@ -597,33 +646,8 @@ class SupervisorWindow(BaseWindow):
 
         disc1_id = self.f_disc1.currentData()
         disc2_id = self.f_disc2.currentData()
-
-        # Handle custom discount tiers
-        if disc1_id == "custom":
-            kwargs["discount_level1"]  = None
-            kwargs["inline_disc1_qty"] = self.f_disc1_qty.value()
-            kwargs["inline_disc1_pct"] = self.f_disc1_pct.value()
-            disc1_id = None
-        elif disc1_id is not None:
-            kwargs["inline_disc1_qty"] = None
-            kwargs["inline_disc1_pct"] = None
-        else:
-            # None selected — leave inline fields untouched
-            pass
-
-        if disc2_id == "custom":
-            kwargs["discount_level2"]  = None
-            kwargs["inline_disc2_qty"] = self.f_disc2_qty.value()
-            kwargs["inline_disc2_pct"] = self.f_disc2_pct.value()
-            disc2_id = None
-        elif disc2_id is not None:
-            kwargs["inline_disc2_qty"] = None
-            kwargs["inline_disc2_pct"] = None
-        else:
-            pass
-
-        kwargs["discount_level1"] = disc1_id
-        kwargs["discount_level2"] = disc2_id
+        if disc1_id == "custom": disc1_id = None
+        if disc2_id == "custom": disc2_id = None
 
         kwargs = dict(
             barcode=barcode, name=name,
@@ -635,9 +659,10 @@ class SupervisorWindow(BaseWindow):
             is_case=int(is_case),
             case_qty=case_qty,
             case_product_id=case_product_id,
+            discount_level1=disc1_id,
+            discount_level2=disc2_id,
         )
-        kwargs["discount_level1"] = disc1_id
-        kwargs["discount_level2"] = disc2_id
+        # Custom (inline) discount tiers override the discount_level FK above
         if self.f_disc1.currentData() == "custom":
             kwargs["inline_disc1_qty"] = self.f_disc1_qty.value()
             kwargs["inline_disc1_pct"] = self.f_disc1_pct.value()
@@ -784,12 +809,20 @@ class SupervisorWindow(BaseWindow):
         self.case_box.setVisible(bool(state))
         if bool(state):
             self.f_case_parent.exclude_id(self._editing_product_id)
+            # Case products don't hold their own stock — the generic
+            # per-product Stock Adjustment section below doesn't apply;
+            # "Restock via Case" in the case panel above replaces it.
+            self.stock_section.setVisible(False)
+            self._refresh_case_stock_lbl()
         else:
             # Case turned off — unlock group picker and clear parent
             self.f_case_parent.clear_value()
             self.f_case_cost_hint.setText("")
             self.f_group.setEnabled(True)
             self.f_group.setToolTip("")
+            # Restore the generic stock section if we're editing an
+            # existing (non-case) product.
+            self.stock_section.setVisible(bool(self._editing_product_id))
 
     def _populate_case_parents(self, select_id: int = None):
         """Restore a saved parent selection when editing."""
@@ -828,6 +861,52 @@ class SupervisorWindow(BaseWindow):
                 )
             else:
                 self.f_case_cost_hint.setText("")
+        self._refresh_case_stock_lbl()
+
+    def _refresh_case_stock_lbl(self):
+        """Show the parent's current stock as case-equivalent units, and
+        enable/disable the case-restock buttons accordingly."""
+        parent_id = self.f_case_parent.selected_id()
+        qty = self.f_case_qty.value() or 1
+        if not parent_id:
+            self.case_stock_lbl.setText("Select a parent product to see stock.")
+            self.case_restock_add_btn.setEnabled(False)
+            self.case_restock_remove_btn.setEnabled(False)
+            return
+        parent = get_product_by_id(parent_id)
+        stock = parent["stock"] if parent else 0
+        cases_avail = stock // qty
+        remainder   = stock % qty
+        txt = (f"Parent stock: {stock} unit{'s' if stock != 1 else ''}  →  "
+               f"~{cases_avail} case{'s' if cases_avail != 1 else ''} available")
+        if remainder:
+            txt += f"  (+{remainder} loose unit{'s' if remainder != 1 else ''})"
+        self.case_stock_lbl.setText(txt)
+        self.case_restock_add_btn.setEnabled(True)
+        self.case_restock_remove_btn.setEnabled(True)
+        self.case_restock_feedback.setText("")
+
+    def _case_restock_add(self):
+        parent_id = self.f_case_parent.selected_id()
+        if not parent_id: return
+        cases = self.case_restock_qty.value()
+        units = cases * (self.f_case_qty.value() or 1)
+        adjust_stock(parent_id, units, "Restock (case)", self.user["id"])
+        self._refresh_case_stock_lbl()
+        self.case_restock_feedback.setStyleSheet(f"color:{GREEN};font-size:10px;font-weight:600;")
+        self.case_restock_feedback.setText(
+            f"✓  Added {cases} case{'s' if cases != 1 else ''} ({units} units) to parent stock.")
+
+    def _case_restock_remove(self):
+        parent_id = self.f_case_parent.selected_id()
+        if not parent_id: return
+        cases = self.case_restock_qty.value()
+        units = cases * (self.f_case_qty.value() or 1)
+        adjust_stock(parent_id, -units, "Correction (case)", self.user["id"])
+        self._refresh_case_stock_lbl()
+        self.case_restock_feedback.setStyleSheet(f"color:{AMBER_DARK};font-size:10px;font-weight:600;")
+        self.case_restock_feedback.setText(
+            f"✓  Removed {cases} case{'s' if cases != 1 else ''} ({units} units) from parent stock.")
 
     def _populate_groups(self):
         self.f_group.clear(); self.f_group.addItem("— No Group —", None)
