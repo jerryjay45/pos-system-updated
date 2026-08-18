@@ -136,6 +136,8 @@ info "Installing application dependencies..."
 $WINE_PIP install \
     dbfread \
     psycopg2-binary \
+    pywin32 \
+    python-escpos \
     --quiet 2>/dev/null
 
 info "Installing PyInstaller..."
@@ -214,6 +216,8 @@ for pkg in ['core', 'ui', 'utils']:
 hiddenimports += [
     'dbfread', 'dbfread.dbf', 'dbfread.field_parser',
     'psycopg2',
+    'win32print', 'win32api', 'win32con', 'win32timezone',
+    'escpos', 'escpos.printer',
     $HIDDEN,
 ]
 
@@ -294,6 +298,8 @@ fi
 # Copy assets and create data dir
 mkdir -p "$DIST_DIR/MerchantPOS_Portable/assets"
 mkdir -p "$DIST_DIR/MerchantPOS_Portable/data"
+mkdir -p "$DIST_DIR/MerchantPOS_Portable/receipts"
+mkdir -p "$DIST_DIR/MerchantPOS_Portable/labels"
 cp -r "$SCRIPT_DIR/assets/"* "$DIST_DIR/MerchantPOS_Portable/assets/" 2>/dev/null || true
 success "Assets copied"
 
@@ -352,13 +358,17 @@ Name: "{group}\\Uninstall ${APP_DISPLAY}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\\${APP_DISPLAY}";     Filename: "{app}\\MerchantPOS.exe"; IconFilename: "{app}\\assets\\merchant_pos.ico"; Tasks: desktopicon
 
 [Dirs]
-Name: "{app}\\data"; Permissions: users-modify
+Name: "{app}\\data";     Permissions: users-modify
+Name: "{app}\\receipts"; Permissions: users-modify
+Name: "{app}\\labels";   Permissions: users-modify
 
 [Run]
 Filename: "{app}\\MerchantPOS.exe"; Description: "{cm:LaunchProgram,${APP_DISPLAY}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}\\data"
+Type: filesandordirs; Name: "{app}\\receipts"
+Type: filesandordirs; Name: "{app}\\labels"
 ISS
 
     ISS_WIN=$(winepath -w "$BUILD_DIR/installer.iss" 2>/dev/null \
