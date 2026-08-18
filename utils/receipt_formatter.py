@@ -322,6 +322,47 @@ def format_refund(receipt: dict, biz: dict,
         receipt, biz, refund_amount, refund_type, refunded_by, reason, currency, width))
 
 
+def _compute_product_totals(all_receipts: list) -> dict[str, dict]:
+    """
+    Aggregate quantity and $ total per unique product across every
+    completed receipt in `all_receipts`. Shared by the embedded
+    PRODUCT SUMMARY section (in the Full Z-Report) and the standalone
+    "products" report type, so the two can never drift out of sync.
+    """
+    product_totals: dict[str, dict] = {}
+    for receipt in all_receipts or []:
+        if receipt.get("status") != "completed":
+            continue
+        for item in receipt.get("items", []):
+            name = item["product_name"]
+            agg = product_totals.setdefault(name, {"qty": 0, "total": 0.0})
+            agg["qty"] += item["quantity"]
+            agg["total"] += item["line_total"]
+    return product_totals
+
+
+def _product_summary_section(product_totals: dict, currency: str, w: int) -> list[Line]:
+    """
+    Render PRODUCT SUMMARY as a (title, div, rows..., div) block, sorted
+    by total $ descending (best sellers first). Returns [] if there's
+    nothing to show.
+    """
+    if not product_totals:
+        return []
+    lines: list[Line] = [
+        (_center("PRODUCT SUMMARY", w), "title"),
+        (_div(w, "-"), "div"),
+    ]
+    for name in sorted(product_totals,
+                        key=lambda n: product_totals[n]["total"],
+                        reverse=True):
+        agg   = product_totals[name]
+        total = _cur(agg["total"], currency)
+        lines.append((_item_row(name, agg["qty"], total, w), "normal"))
+    lines.append((_div(w), "div"))
+    return lines
+
+
 # ── Session summary ───────────────────────────────────────────────────────────
 
 def format_session_lines(session: dict, totals: dict, cashier_name: str,
@@ -332,10 +373,17 @@ def format_session_lines(session: dict, totals: dict, cashier_name: str,
                          voided_receipts: list = None,
                          all_receipts: list = None,
                          width: int | None = None) -> list[Line]:
+    """
+    report_type — 'full' (line items + product totals + group totals),
+                  'products' (product totals only — a focused report,
+                  no per-receipt line items or group breakdown), or
+                  'summary' (totals only, no product-level detail).
+    """
     w = width if width is not None else get_width()
     lines = _header(biz, w)
 
-    title = "FULL Z-REPORT" if report_type == "full" else "SESSION SUMMARY"
+    titles = {"full": "FULL Z-REPORT", "products": "PRODUCT SUMMARY REPORT"}
+    title = titles.get(report_type, "SESSION SUMMARY")
     lines.append((_center(title, w), "title"))
     lines.append((_div(w), "div"))
     lines.append((_right("Session #:", f"{session['id']:04d}", w), "normal"))
@@ -362,6 +410,12 @@ def format_session_lines(session: dict, totals: dict, cashier_name: str,
     lines.append((_right("Refunded:",  str(ref), w), "normal"))
     lines.append((_right("Total:",     str(txn), w), "normal"))
     lines.append((_div(w), "div"))
+
+    # ── Products-only report: skip straight to the product summary,
+    # no per-receipt line items or group breakdown ─────────────────────
+    if report_type == "products" and all_receipts:
+        product_totals = _compute_product_totals(all_receipts)
+        lines += _product_summary_section(product_totals, currency, w)
 
     # ── Full report: line items per receipt ────────────────────────────
     if report_type == "full" and all_receipts:
@@ -393,8 +447,8 @@ def format_session_lines(session: dict, totals: dict, cashier_name: str,
     lines.append((_right("GROSS SALES:", _cur(sales, currency), w), "total"))
     lines.append((_div(w), "div"))
 
-    # ── Product group totals ───────────────────────────────────────────
-    if group_totals:
+    # ── Product group totals (full report only) ─────────────────────────
+    if report_type == "full" and group_totals:
         lines.append((_center("SALES BY GROUP", w), "title"))
         lines.append((_div(w, "-"), "div"))
         for g in group_totals:
@@ -402,36 +456,15 @@ def format_session_lines(session: dict, totals: dict, cashier_name: str,
             lines.append((_right(label, _cur(g["total_sales"], currency), w), "normal"))
         lines.append((_div(w), "div"))
 
-    # ── Product summary — one line per unique product sold during the
-    # session, with total qty and total $, regardless of how many
-    # separate receipts it appeared on. This sits alongside SALES BY
-    # GROUP (which aggregates at category level) and the LINE ITEMS
-    # detail above (which is per-receipt) — the three views answer
-    # different questions and none replaces the others.
+    # ── Product summary — embedded in the Full report, alongside
+    # SALES BY GROUP (which aggregates at category level) and LINE
+    # ITEMS above (which is per-receipt). One line per unique product
+    # sold in the whole session, with total qty and total $, regardless
+    # of how many separate receipts it appeared on. The three views
+    # answer different questions and none replaces the others.
     if report_type == "full" and all_receipts:
-        product_totals: dict[str, dict] = {}
-        for receipt in all_receipts:
-            if receipt.get("status") != "completed":
-                continue
-            for item in receipt.get("items", []):
-                name = item["product_name"]
-                agg = product_totals.setdefault(name, {"qty": 0, "total": 0.0})
-                agg["qty"] += item["quantity"]
-                agg["total"] += item["line_total"]
-
-        if product_totals:
-            lines.append((_center("PRODUCT SUMMARY", w), "title"))
-            lines.append((_div(w, "-"), "div"))
-            # Sorted by total $ descending — best sellers first. Swap the
-            # key to `name` for alphabetical if that's more useful for
-            # reconciliation.
-            for name in sorted(product_totals,
-                                key=lambda n: product_totals[n]["total"],
-                                reverse=True):
-                agg   = product_totals[name]
-                total = _cur(agg["total"], currency)
-                lines.append((_item_row(name, agg["qty"], total, w), "normal"))
-            lines.append((_div(w), "div"))
+        product_totals = _compute_product_totals(all_receipts)
+        lines += _product_summary_section(product_totals, currency, w)
 
     # ── Voided transactions ────────────────────────────────────────────
     if voided_receipts:
@@ -465,10 +498,13 @@ def format_session(session: dict, totals: dict, cashier_name: str,
     """
     Format a session summary / Z-report.
 
-    report_type — 'full' (all line items + totals) or 'summary' (totals only)
+    report_type — 'full' (all line items + product totals + group totals),
+                  'products' (product totals only, no line items/groups),
+                  or 'summary' (totals only, no product-level detail).
     group_totals    — list of {group_name, total_sales, item_count}
     voided_receipts — list of voided receipt dicts
-    all_receipts    — list of all receipts (used for full report line items)
+    all_receipts    — list of all receipts (used for 'full' line items
+                       and for 'full'/'products' product totals)
     """
     return _lines_to_text(format_session_lines(
         session, totals, cashier_name, biz, opened_by, closed_by, currency,
