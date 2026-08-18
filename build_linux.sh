@@ -140,12 +140,13 @@ info "Upgrading pip..."
 "$PIP" install --upgrade pip --quiet
 
 info "Installing PyQt6..."
-"$PIP" install "PyQt6==6.9.1" --quiet
+"$PIP" install "PyQt6==6.11.0" --quiet
 
 info "Installing application dependencies..."
 "$PIP" install \
     dbfread \
     psycopg2-binary \
+    python-escpos \
     --quiet
 
 info "Installing PyInstaller..."
@@ -158,10 +159,26 @@ step "Checking assets"
 
 mkdir -p "$SCRIPT_DIR/assets"
 
+# Real icon may be checked in as merchant_pos_512.png (or _256/_128) rather
+# than the bare "merchant_pos.png" this script (and the .desktop file) look
+# for. Prefer the real art over the generated placeholder whenever it's
+# present under any of those names.
 if [ ! -f "$SCRIPT_DIR/assets/merchant_pos.png" ]; then
-    warn "assets/merchant_pos.png not found — creating placeholder"
-    warn "Replace with your real icon (512x512 PNG) before distributing"
-    "$PY" -c "
+    SOURCE_ICON=""
+    for candidate in merchant_pos_512.png merchant_pos_256.png merchant_pos_128.png; do
+        if [ -f "$SCRIPT_DIR/assets/$candidate" ]; then
+            SOURCE_ICON="$SCRIPT_DIR/assets/$candidate"
+            break
+        fi
+    done
+
+    if [ -n "$SOURCE_ICON" ]; then
+        info "Using $(basename "$SOURCE_ICON") as the app icon"
+        cp "$SOURCE_ICON" "$SCRIPT_DIR/assets/merchant_pos.png"
+    else
+        warn "assets/merchant_pos.png not found — creating placeholder"
+        warn "Replace with your real icon (512x512 PNG) before distributing"
+        "$PY" -c "
 try:
     from PyQt6.QtWidgets import QApplication
     from PyQt6.QtGui import QPixmap, QPainter, QColor, QFont
@@ -181,6 +198,7 @@ try:
 except Exception as e:
     print(f'Could not create icon: {e}')
 " 2>/dev/null || true
+    fi
 fi
 
 # Also need .ico for the PyInstaller exe metadata (used in tar.gz info)
@@ -236,7 +254,7 @@ for pkg in ['core', 'ui', 'utils']:
 # Extra runtime dependencies
 hiddenimports += [
     'dbfread', 'dbfread.dbf', 'dbfread.field_parser',
-    'serial', 'usb', 'psycopg2',
+    'psycopg2',
     'escpos', 'escpos.printer',
     $HIDDEN,
 ]
@@ -323,6 +341,8 @@ cp -r "$SCRIPT_DIR/assets/"* "$PORTABLE/assets/" 2>/dev/null || true
 
 # Create empty data directory (databases live here at runtime)
 mkdir -p "$PORTABLE/data"
+mkdir -p "$PORTABLE/receipts"
+mkdir -p "$PORTABLE/labels"
 
 # Create launcher shell script (handles library paths and working directory)
 cat > "$PORTABLE/launch.sh" << 'LAUNCHER'
