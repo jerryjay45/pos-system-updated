@@ -255,7 +255,7 @@ def print_session(session: dict, report_type: str = "full",
         voided    = session_voided_receipts(session["id"])
 
         all_receipts = None
-        if report_type == "full":
+        if report_type in ("full", "products"):
             receipts     = get_session_receipts(session["id"])
             all_receipts = [get_receipt_by_id(r["id"]) for r in receipts
                             if r.get("status") == "completed"]
