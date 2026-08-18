@@ -35,8 +35,16 @@ All functions:
 
 from __future__ import annotations
 import os
+import re
 from datetime import datetime
 from config import RECEIPT_DIR
+
+# Receipts are filed per cashier, then by type:
+#   receipts/<cashier>/transactions/   — sale receipts + reprints
+#   receipts/<cashier>/voids/          — void notices
+#   receipts/<cashier>/refunds/        — refund receipts
+#   receipts/<cashier>/sessions/<report_type>/  — full / products / summary Z-reports
+_UNKNOWN_CASHIER = "unknown_user"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -46,11 +54,37 @@ def _get_biz_and_currency() -> tuple[dict, str]:
     return get_business(), cfg_get("currency_symbol", "$")
 
 
-def _save_text(filename: str, text: str):
-    """Always save a .txt copy to receipts/."""
-    os.makedirs(RECEIPT_DIR, exist_ok=True)
+def _safe_folder_name(name: str) -> str:
+    """Sanitize a name for use as a filesystem folder (usernames, report types, etc.)."""
+    name = (name or "").strip()
+    if not name:
+        return _UNKNOWN_CASHIER
+    # Replace anything that isn't alphanumeric, dash, underscore, or space
+    name = re.sub(r"[^\w\- ]+", "_", name)
+    name = name.strip().replace(" ", "_")
+    return name or _UNKNOWN_CASHIER
+
+
+def _cashier_folder_by_user_id(user_id: int | None) -> str:
+    """Resolve a user_id to a safe folder name (their username), falling back gracefully."""
+    if user_id is None:
+        return _UNKNOWN_CASHIER
     try:
-        with open(os.path.join(RECEIPT_DIR, filename), "w", encoding="utf-8") as f:
+        from core.db_users import get_user_by_id
+        user = get_user_by_id(user_id)
+        if user and user.get("username"):
+            return _safe_folder_name(user["username"])
+    except Exception as e:
+        print(f"[PrintManager] Could not resolve cashier folder: {e}")
+    return _UNKNOWN_CASHIER
+
+
+def _save_text(subdirs: list[str], filename: str, text: str):
+    """Save a .txt copy under receipts/<subdirs...>/filename."""
+    folder = os.path.join(RECEIPT_DIR, *subdirs)
+    os.makedirs(folder, exist_ok=True)
+    try:
+        with open(os.path.join(folder, filename), "w", encoding="utf-8") as f:
             f.write(text)
     except Exception as e:
         print(f"[PrintManager] Could not save text copy: {e}")
@@ -186,7 +220,9 @@ def print_receipt(receipt: dict, parent=None) -> bool:
         biz, currency = _get_biz_and_currency()
         lines = format_sale_lines(receipt, biz, currency)
         text  = "\n".join(t for t, _k in lines)
-        _save_text(f"receipt_{_safe_num(receipt['receipt_number'])}_{_stamp()}.txt", text)
+        cashier_folder = _cashier_folder_by_user_id(receipt.get("user_id"))
+        _save_text([cashier_folder, "transactions"],
+                   f"receipt_{_safe_num(receipt['receipt_number'])}_{_stamp()}.txt", text)
 
         cash_drawer = (
             cfg_get("cash_drawer_kick_on_cash_sale", "0").strip() == "1"
@@ -209,7 +245,9 @@ def print_void(receipt: dict, refund: dict,
         lines = format_void_lines(receipt, biz, voided_by=voided_by,
                                   reason=reason, currency=currency)
         text  = "\n".join(t for t, _k in lines)
-        _save_text(f"void_{_safe_num(receipt['receipt_number'])}_{_stamp()}.txt", text)
+        cashier_folder = _cashier_folder_by_user_id(receipt.get("user_id"))
+        _save_text([cashier_folder, "voids"],
+                   f"void_{_safe_num(receipt['receipt_number'])}_{_stamp()}.txt", text)
         return _dialog_print(text, parent, lines=lines)
     except Exception as e:
         print(f"[PrintManager] print_void error: {e}")
@@ -230,7 +268,9 @@ def print_refund(receipt: dict, refund: dict,
                                     refund_type=refund_type, refunded_by=refunded_by,
                                     reason=reason, currency=currency)
         text  = "\n".join(t for t, _k in lines)
-        _save_text(f"refund_{_safe_num(receipt['receipt_number'])}_{_stamp()}.txt", text)
+        cashier_folder = _cashier_folder_by_user_id(receipt.get("user_id"))
+        _save_text([cashier_folder, "refunds"],
+                   f"refund_{_safe_num(receipt['receipt_number'])}_{_stamp()}.txt", text)
         return _dialog_print(text, parent, lines=lines)
     except Exception as e:
         print(f"[PrintManager] print_refund error: {e}")
@@ -279,7 +319,10 @@ def print_session(session: dict, report_type: str = "full",
             all_receipts=all_receipts,
         )
         text = "\n".join(t for t, _k in lines)
-        _save_text(f"session_{session['id']:04d}_{report_type}_{_stamp()}.txt", text)
+        cashier_folder = _cashier_folder_by_user_id(session.get("user_id"))
+        report_folder  = _safe_folder_name(report_type)
+        _save_text([cashier_folder, "sessions", report_folder],
+                   f"session_{session['id']:04d}_{report_type}_{_stamp()}.txt", text)
         return _dialog_print(text, parent, lines=lines)
 
     except Exception as e:
@@ -303,7 +346,9 @@ def reprint_receipt(receipt_number: str, parent=None) -> bool:
         biz, currency = _get_biz_and_currency()
         lines = format_sale_lines(receipt, biz, currency)
         text  = "\n".join(t for t, _k in lines)
-        _save_text(f"reprint_{_safe_num(receipt['receipt_number'])}_{_stamp()}.txt", text)
+        cashier_folder = _cashier_folder_by_user_id(receipt.get("user_id"))
+        _save_text([cashier_folder, "transactions"],
+                   f"reprint_{_safe_num(receipt['receipt_number'])}_{_stamp()}.txt", text)
         return _auto_print(text, parent, lines=lines, cash_drawer=False)
     except Exception as e:
         print(f"[PrintManager] reprint_receipt error: {e}")
