@@ -397,12 +397,20 @@ def add_case_group(name: str, case_qty: int,
     """Create a new shared-pool case group.
 
     Returns the new group id.
+    Raises ValueError if a group with the same name already exists.
     """
+    clean = name.strip().upper()
     with _conn() as con:
+        existing = con.execute(
+            "SELECT id FROM price_groups WHERE name = ? AND type = 'case_group'",
+            (clean,)
+        ).fetchone()
+        if existing:
+            raise ValueError(f'A case group named "{clean}" already exists.')
         cur = con.execute(
             """INSERT INTO price_groups (name, type, cost, selling_price, case_qty, pool_stock)
                VALUES (?, 'case_group', ?, ?, ?, 0)""",
-            (name.strip().upper(), cost, selling_price, case_qty)
+            (clean, cost, selling_price, case_qty)
         )
         con.commit()
         return cur.lastrowid
