@@ -38,9 +38,12 @@ CREATE TABLE IF NOT EXISTS price_groups (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     name          TEXT    NOT NULL UNIQUE,
     type          TEXT    NOT NULL DEFAULT 'alias'
-                          CHECK(type IN ('alias','variant')),
+                          CHECK(type IN ('alias','variant','case_group')),
     cost          REAL    NOT NULL DEFAULT 0.0,
-    selling_price REAL    NOT NULL DEFAULT 0.0
+    selling_price REAL    NOT NULL DEFAULT 0.0,
+    -- case_group only: units per case and shared pool stock
+    case_qty      INTEGER DEFAULT NULL,
+    pool_stock    INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS groups (
@@ -68,6 +71,7 @@ CREATE TABLE IF NOT EXISTS products (
     is_case          INTEGER NOT NULL DEFAULT 0,
     case_qty         INTEGER DEFAULT NULL,
     case_product_id  INTEGER REFERENCES products(id)     ON DELETE SET NULL,
+    case_group_id    INTEGER REFERENCES price_groups(id) ON DELETE SET NULL,
     stock            INTEGER NOT NULL DEFAULT 0,
     created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
     updated_at       TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -82,9 +86,21 @@ CREATE TABLE IF NOT EXISTS stock_adjustments (
     adjusted_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE INDEX IF NOT EXISTS idx_products_barcode  ON products(barcode);CREATE INDEX IF NOT EXISTS idx_products_name     ON products(name COLLATE NOCASE);
-CREATE INDEX IF NOT EXISTS idx_products_alias_pg ON products(alias_group_id);
-CREATE INDEX IF NOT EXISTS idx_products_var_pg   ON products(variant_group_id);
+CREATE TABLE IF NOT EXISTS pool_stock_adjustments (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    case_group_id  INTEGER NOT NULL REFERENCES price_groups(id) ON DELETE CASCADE,
+    qty_change     INTEGER NOT NULL,
+    reason         TEXT    NOT NULL DEFAULT 'Restock',
+    adjusted_by    INTEGER DEFAULT NULL,
+    adjusted_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_products_barcode    ON products(barcode);
+CREATE INDEX IF NOT EXISTS idx_products_name       ON products(name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_products_alias_pg   ON products(alias_group_id);
+CREATE INDEX IF NOT EXISTS idx_products_var_pg     ON products(variant_group_id);
+CREATE INDEX IF NOT EXISTS idx_products_case_grp   ON products(case_group_id);
+CREATE INDEX IF NOT EXISTS idx_pool_adj_group      ON pool_stock_adjustments(case_group_id);
 """
 
 
@@ -200,6 +216,56 @@ def init_db():
         if "profit_margin" not in gcols:
             con.execute("ALTER TABLE groups ADD COLUMN profit_margin REAL NOT NULL DEFAULT 0.0")
 
+        # ── Step 3b: migrate price_groups — add case_group columns ────
+        pgcols = {r[1] for r in con.execute("PRAGMA table_info(price_groups)")}
+        for col, defn in [
+            ("cost",       "REAL    NOT NULL DEFAULT 0.0"),
+            ("case_qty",   "INTEGER DEFAULT NULL"),
+            ("pool_stock", "INTEGER NOT NULL DEFAULT 0"),
+        ]:
+            if col not in pgcols:
+                con.execute(f"ALTER TABLE price_groups ADD COLUMN {col} {defn}")
+        # Widen the CHECK constraint on type to include 'case_group'.
+        # SQLite doesn't support ALTER COLUMN so we check the existing SQL;
+        # if it's missing case_group we recreate the table.
+        pg_sql = con.execute(
+            "SELECT sql FROM sqlite_master WHERE name='price_groups'"
+        ).fetchone()
+        if pg_sql and "case_group" not in pg_sql[0]:
+            con.executescript("""
+                PRAGMA foreign_keys=OFF;
+                CREATE TABLE price_groups_new (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name          TEXT    NOT NULL UNIQUE,
+                    type          TEXT    NOT NULL DEFAULT 'alias'
+                                          CHECK(type IN ('alias','variant','case_group')),
+                    cost          REAL    NOT NULL DEFAULT 0.0,
+                    selling_price REAL    NOT NULL DEFAULT 0.0,
+                    case_qty      INTEGER DEFAULT NULL,
+                    pool_stock    INTEGER NOT NULL DEFAULT 0
+                );
+                INSERT INTO price_groups_new (id, name, type, cost, selling_price, case_qty, pool_stock)
+                SELECT id, name, type,
+                       COALESCE(cost, 0.0),
+                       COALESCE(selling_price, 0.0),
+                       case_qty,
+                       COALESCE(pool_stock, 0)
+                FROM price_groups;
+                DROP TABLE price_groups;
+                ALTER TABLE price_groups_new RENAME TO price_groups;
+                PRAGMA foreign_keys=ON;
+            """)
+            con.commit()
+
+        # ── Step 3c: migrate products — add case_group_id ─────────────
+        if has_products:
+            cols = {r[1] for r in con.execute("PRAGMA table_info(products)")}
+            if "case_group_id" not in cols:
+                con.execute(
+                    "ALTER TABLE products ADD COLUMN "
+                    "case_group_id INTEGER REFERENCES price_groups(id) ON DELETE SET NULL"
+                )
+
         # ── Step 4: fix stock_adjustments — remove cross-DB FK to users ──
         # Recreate without the REFERENCES users(id) which causes errors
         # since users live in a separate DB file
@@ -305,6 +371,142 @@ def delete_price_group(group_id: int):
     with _conn() as con:
         con.execute("DELETE FROM price_groups WHERE id = ?", (group_id,))
         con.commit()
+
+
+# ── Case Groups ───────────────────────────────────────────────────────────────
+
+def get_case_groups() -> list[dict]:
+    """Return all case_group price groups, ordered by name."""
+    with _conn() as con:
+        return [dict(r) for r in con.execute(
+            "SELECT * FROM price_groups WHERE type = 'case_group' ORDER BY name"
+        )]
+
+
+def get_case_group_by_id(group_id: int) -> dict | None:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM price_groups WHERE id = ? AND type = 'case_group'",
+            (group_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def add_case_group(name: str, case_qty: int,
+                   cost: float = 0.0, selling_price: float = 0.0) -> int:
+    """Create a new shared-pool case group.
+
+    Returns the new group id.
+    """
+    with _conn() as con:
+        cur = con.execute(
+            """INSERT INTO price_groups (name, type, cost, selling_price, case_qty, pool_stock)
+               VALUES (?, 'case_group', ?, ?, ?, 0)""",
+            (name.strip().upper(), cost, selling_price, case_qty)
+        )
+        con.commit()
+        return cur.lastrowid
+
+
+def update_case_group(group_id: int, name: str = None, case_qty: int = None,
+                      cost: float = None, selling_price: float = None) -> list[dict]:
+    """Update a case group's metadata and cascade cost/price to all member case products.
+
+    Returns the list of affected product dicts (id, name).
+    """
+    with _conn() as con:
+        sets, params = [], []
+        if name is not None:
+            sets.append("name = ?"); params.append(name.strip().upper())
+        if case_qty is not None:
+            sets.append("case_qty = ?"); params.append(case_qty)
+        if cost is not None:
+            sets.append("cost = ?"); params.append(cost)
+        if selling_price is not None:
+            sets.append("selling_price = ?"); params.append(selling_price)
+        if sets:
+            params.append(group_id)
+            con.execute(f"UPDATE price_groups SET {', '.join(sets)} WHERE id = ?", params)
+
+        # Cascade cost + price to all member case products
+        affected = []
+        if cost is not None or selling_price is not None:
+            members = con.execute(
+                "SELECT id, name FROM products WHERE case_group_id = ?", (group_id,)
+            ).fetchall()
+            p_sets, p_params = [], []
+            if cost is not None:
+                p_sets.append("cost = ?"); p_params.append(cost)
+            if selling_price is not None:
+                p_sets.append("selling_price = ?"); p_params.append(selling_price)
+            p_params.append(group_id)
+            con.execute(
+                f"UPDATE products SET {', '.join(p_sets)}, updated_at = datetime('now') "
+                f"WHERE case_group_id = ?",
+                p_params
+            )
+            affected = [dict(r) for r in members]
+
+        con.commit()
+        return affected
+
+
+def delete_case_group(group_id: int):
+    """Delete a case group. Member products will have case_group_id set to NULL (FK cascade)."""
+    with _conn() as con:
+        con.execute("DELETE FROM price_groups WHERE id = ? AND type = 'case_group'", (group_id,))
+        con.commit()
+
+
+def adjust_case_group_stock(group_id: int, delta: int,
+                             reason: str = "Restock", adjusted_by: int = None):
+    """Adjust the shared pool stock for a case group.
+
+    delta > 0 = cases received; delta < 0 = cases sold / corrected.
+    Pool stock is clamped to 0 on removal.
+    Records in pool_stock_adjustments for the audit trail.
+    """
+    with _conn() as con:
+        if delta < 0:
+            con.execute(
+                "UPDATE price_groups SET pool_stock = MAX(0, pool_stock + ?) WHERE id = ?",
+                (delta, group_id)
+            )
+        else:
+            con.execute(
+                "UPDATE price_groups SET pool_stock = pool_stock + ? WHERE id = ?",
+                (delta, group_id)
+            )
+        con.execute(
+            """INSERT INTO pool_stock_adjustments
+               (case_group_id, qty_change, reason, adjusted_by)
+               VALUES (?, ?, ?, ?)""",
+            (group_id, delta, reason, adjusted_by)
+        )
+        con.commit()
+
+
+def get_pool_stock_adjustments(group_id: int, limit: int = 20) -> list[dict]:
+    with _conn() as con:
+        return [dict(r) for r in con.execute(
+            """SELECT psa.*, pg.name AS group_name
+               FROM pool_stock_adjustments psa
+               JOIN price_groups pg ON pg.id = psa.case_group_id
+               WHERE psa.case_group_id = ?
+               ORDER BY psa.adjusted_at DESC LIMIT ?""",
+            (group_id, limit)
+        )]
+
+
+def get_low_stock_case_groups(threshold: int = 3) -> list[dict]:
+    """Case groups whose pool stock is at or below the threshold."""
+    with _conn() as con:
+        return [dict(r) for r in con.execute(
+            """SELECT * FROM price_groups
+               WHERE type = 'case_group' AND pool_stock <= ?
+               ORDER BY pool_stock ASC, name""",
+            (threshold,)
+        )]
 
 
 # ── Product Groups ────────────────────────────────────────────────────────────
@@ -546,6 +748,7 @@ def add_product(barcode: str, name: str, cost: float,
                 alias_group_id: int = None, variant_group_id: int = None,
                 gct_applicable: bool = True, is_case: bool = False,
                 case_qty: int = None, case_product_id: int = None,
+                case_group_id: int = None,
                 discount_level1: int = None, discount_level2: int = None,
                 inline_disc1_qty: int = None, inline_disc1_pct: float = None,
                 inline_disc2_qty: int = None, inline_disc2_pct: float = None,
@@ -555,16 +758,16 @@ def add_product(barcode: str, name: str, cost: float,
             """INSERT INTO products
                (barcode, name, cost, selling_price, group_id,
                 alias_group_id, variant_group_id,
-                gct_applicable, is_case, case_qty, case_product_id,
+                gct_applicable, is_case, case_qty, case_product_id, case_group_id,
                 discount_level1, discount_level2,
                 inline_disc1_qty, inline_disc1_pct,
                 inline_disc2_qty, inline_disc2_pct,
                 stock)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (barcode.strip().upper(), name.strip().upper(),
              cost, selling_price, group_id,
              alias_group_id, variant_group_id,
-             int(gct_applicable), int(is_case), case_qty, case_product_id,
+             int(gct_applicable), int(is_case), case_qty, case_product_id, case_group_id,
              discount_level1, discount_level2,
              inline_disc1_qty, inline_disc1_pct,
              inline_disc2_qty, inline_disc2_pct,
@@ -607,25 +810,44 @@ def delete_product(product_id: int) -> bool:
 # ── Stock ─────────────────────────────────────────────────────────────────────
 
 def decrement_stock(product_id: int, qty: int):
-    """Decrement stock for a sale. Handles case products automatically.
-    For case products, decrements the master single product's stock by case_qty × qty.
-    Clamps at 0.
+    """Decrement stock for a sale. Handles both case modes automatically.
+
+    Mode 1 (case_product_id set): decrements the parent single product's
+    stock by case_qty x qty sold.
+
+    Mode 2 (case_group_id set): decrements the shared pool stock on the
+    case group by qty sold (1 case = 1 unit off the pool).
+
+    Plain single products: decrements own stock by qty.
+    Clamps at 0 in all cases.
     """
     with _conn() as con:
         p = con.execute(
-            "SELECT is_case, case_qty, case_product_id FROM products WHERE id = ?",
+            "SELECT is_case, case_qty, case_product_id, case_group_id FROM products WHERE id = ?",
             (product_id,)
         ).fetchone()
         if not p:
             return
-        if p["is_case"] and p["case_product_id"]:
-            # Decrement master single product
+        if p["is_case"] and p["case_group_id"]:
+            # Mode 2 - shared pool: decrement the case group pool stock
+            con.execute(
+                "UPDATE price_groups SET pool_stock = MAX(0, pool_stock - ?) WHERE id = ?",
+                (qty, p["case_group_id"])
+            )
+            con.execute(
+                "INSERT INTO pool_stock_adjustments "
+                "(case_group_id, qty_change, reason) VALUES (?, ?, 'Sale')",
+                (p["case_group_id"], -qty)
+            )
+        elif p["is_case"] and p["case_product_id"]:
+            # Mode 1 - linked: decrement the parent single product stock
             units = (p["case_qty"] or 1) * qty
             con.execute(
                 "UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?",
                 (units, p["case_product_id"])
             )
         else:
+            # Plain single product
             con.execute(
                 "UPDATE products SET stock = MAX(0, stock - ?) WHERE id = ?",
                 (qty, product_id)
@@ -699,15 +921,31 @@ def get_low_stock_products(threshold: int = 5) -> list[dict]:
 
 
 def increment_stock(product_id: int, qty: int):
-    """Increment stock for a void/refund. Handles case products automatically."""
+    """Increment stock for a void/refund. Handles both case modes automatically.
+
+    Mode 1: adds back case_qty x qty to the parent single product stock.
+    Mode 2: adds back qty to the shared pool stock on the case group.
+    """
     with _conn() as con:
         p = con.execute(
-            "SELECT is_case, case_qty, case_product_id FROM products WHERE id = ?",
+            "SELECT is_case, case_qty, case_product_id, case_group_id FROM products WHERE id = ?",
             (product_id,)
         ).fetchone()
         if not p:
             return
-        if p["is_case"] and p["case_product_id"]:
+        if p["is_case"] and p["case_group_id"]:
+            # Mode 2 - shared pool
+            con.execute(
+                "UPDATE price_groups SET pool_stock = pool_stock + ? WHERE id = ?",
+                (qty, p["case_group_id"])
+            )
+            con.execute(
+                "INSERT INTO pool_stock_adjustments "
+                "(case_group_id, qty_change, reason) VALUES (?, ?, 'Void/Refund')",
+                (p["case_group_id"], qty)
+            )
+        elif p["is_case"] and p["case_product_id"]:
+            # Mode 1 - linked
             units = (p["case_qty"] or 1) * qty
             con.execute(
                 "UPDATE products SET stock = stock + ? WHERE id = ?",
