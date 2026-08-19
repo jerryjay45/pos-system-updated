@@ -1092,7 +1092,7 @@ class SupervisorWindow(BaseWindow):
         btn_row.addWidget(cancel_btn); btn_row.addWidget(save_btn)
         lay.addLayout(btn_row)
         if dlg.exec() != QDialog.DialogCode.Accepted: return
-        name = name_edit.text().strip()
+        name = name_edit.text().strip().upper()
         if not name:
             QMessageBox.warning(self, "Required", "Group name is required."); return
         try:
@@ -1100,7 +1100,22 @@ class SupervisorWindow(BaseWindow):
             price = float(price_edit.text() or 0)
         except ValueError:
             QMessageBox.warning(self, "Invalid", "Enter valid cost and price values."); return
-        new_id = add_case_group(name, qty_spin.value(), cost, price)
+
+        # Check for duplicate name before inserting
+        existing = [g for g in get_case_groups() if g["name"] == name]
+        if existing:
+            QMessageBox.warning(
+                self, "Name Already Exists",
+                f'A case group named "{name}" already exists.\n'
+                f'Please choose a different name or select the existing group.'
+            )
+            return
+
+        try:
+            new_id = add_case_group(name, qty_spin.value(), cost, price)
+        except Exception as e:
+            QMessageBox.critical(self, "Error Creating Group", str(e))
+            return
         self._populate_case_group_combo(select_id=new_id)
 
     def _pool_restock_add(self):
