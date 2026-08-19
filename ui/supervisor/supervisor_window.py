@@ -26,6 +26,8 @@ from core.db_products import (
     get_price_groups, add_price_group, update_price_group,
     count_products, cascade_single_cost_to_cases, recalculate_all_cases,
     adjust_stock,
+    get_case_groups, get_case_group_by_id,
+    add_case_group, update_case_group, adjust_case_group_stock,
 )
 from core.db_users    import get_users, get_sessions, open_session, close_session, get_user_by_id, has_open_session
 from core.db_checkout import (
@@ -320,41 +322,53 @@ class SupervisorWindow(BaseWindow):
         flags_row.addWidget(self.t_gct); flags_row.addWidget(self.t_case); flags_row.addStretch()
         lay.addLayout(flags_row)
 
+        # ── Case Box — shown when "Case Item" is ticked ─────────────
         self.case_box = QFrame(); self.case_box.setVisible(False)
         self.case_box.setStyleSheet(f"background:{AMBER_LIGHTEST};border:1px solid {AMBER};border-radius:6px;")
         cb_lay = QVBoxLayout(self.case_box); cb_lay.setContentsMargins(10,10,10,10); cb_lay.setSpacing(6)
-        cb_lay.addWidget(self._flabel("Parent Single Product"))
+
+        # Mode toggle — radio buttons
+        cb_lay.addWidget(self._flabel("Case Mode"))
+        mode_row = QHBoxLayout(); mode_row.setSpacing(16)
+        self.case_mode_linked = QRadioButton("Linked to specific product")
+        self.case_mode_pool   = QRadioButton("Shared pool")
+        self.case_mode_linked.setChecked(True)
+        for rb in (self.case_mode_linked, self.case_mode_pool):
+            rb.setStyleSheet(f"color:{DARK_CARD};font-size:12px;")
+            mode_row.addWidget(rb)
+        mode_row.addStretch()
+        cb_lay.addLayout(mode_row)
+        self.case_mode_linked.toggled.connect(self._on_case_mode_changed)
+
+        # ── Mode 1 panel: linked to a specific single product ─────────
+        self.case_mode1_frame = QFrame()
+        self.case_mode1_frame.setStyleSheet("background:transparent;border:none;")
+        m1_lay = QVBoxLayout(self.case_mode1_frame); m1_lay.setContentsMargins(0,4,0,0); m1_lay.setSpacing(6)
+        m1_lay.addWidget(self._flabel("Parent Single Product"))
         from ui.shared.searchable_product_combo import SearchableProductCombo
         self.f_case_parent = SearchableProductCombo()
         self.f_case_parent.selectionChanged.connect(lambda pid, name: self._on_case_parent_changed())
-        cb_lay.addWidget(self.f_case_parent)
+        m1_lay.addWidget(self.f_case_parent)
         self.f_case_cost_hint = QLabel("")
         self.f_case_cost_hint.setStyleSheet(f"color:{MUTED};font-size:10px;")
-        cb_lay.addWidget(self.f_case_cost_hint)
-        case_qty_row = QHBoxLayout(); case_qty_row.setSpacing(8)
-        cb_lay.addWidget(self._flabel("Units per Case"))
+        m1_lay.addWidget(self.f_case_cost_hint)
+        m1_lay.addWidget(self._flabel("Units per Case"))
         self.f_case_qty = QSpinBox(); self.f_case_qty.setMinimum(1); self.f_case_qty.setMaximum(9999)
         self.f_case_qty.setStyleSheet(self._input_style())
         self.f_case_qty.valueChanged.connect(self._on_case_parent_changed)
-        cb_lay.addWidget(self.f_case_qty)
-
-        # ── Restock via case ─────────────────────────────────────────
-        # Case products don't hold their own stock — it's derived from
-        # the parent single product. This lets a supervisor log a case
-        # delivery directly (e.g. "received 5 cases") and have it convert
-        # to the parent's unit stock automatically, instead of having to
-        # do the arithmetic and adjust the parent product by hand.
-        cb_lay.addWidget(_divider())
-        cb_lay.addWidget(self._flabel("Restock via Case"))
+        m1_lay.addWidget(self.f_case_qty)
+        # Restock (Mode 1) — converts cases to parent units
+        m1_lay.addWidget(_divider())
+        m1_lay.addWidget(self._flabel("Restock via Case"))
         self.case_stock_lbl = QLabel("Select a parent product to see stock.")
         self.case_stock_lbl.setStyleSheet(f"color:{DARK_CARD};font-size:11px;font-weight:600;")
         self.case_stock_lbl.setWordWrap(True)
-        cb_lay.addWidget(self.case_stock_lbl)
-        case_restock_row = QHBoxLayout(); case_restock_row.setSpacing(6)
+        m1_lay.addWidget(self.case_stock_lbl)
+        m1_restock_row = QHBoxLayout(); m1_restock_row.setSpacing(6)
         self.case_restock_qty = QSpinBox()
         self.case_restock_qty.setMinimum(1); self.case_restock_qty.setMaximum(9999)
         self.case_restock_qty.setStyleSheet(self._input_style())
-        case_restock_row.addWidget(self.case_restock_qty, stretch=1)
+        m1_restock_row.addWidget(self.case_restock_qty, stretch=1)
         self.case_restock_add_btn = QPushButton("＋  Add Cases")
         self.case_restock_add_btn.setFixedHeight(30); self.case_restock_add_btn.setEnabled(False)
         self.case_restock_add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -373,12 +387,84 @@ class SupervisorWindow(BaseWindow):
             f"QPushButton:hover{{background:{RED};color:white;}}"
             f"QPushButton:disabled{{color:{MUTED};border-color:{BORDER_LIGHT};}}")
         self.case_restock_remove_btn.clicked.connect(self._case_restock_remove)
-        case_restock_row.addWidget(self.case_restock_add_btn)
-        case_restock_row.addWidget(self.case_restock_remove_btn)
-        cb_lay.addLayout(case_restock_row)
+        m1_restock_row.addWidget(self.case_restock_add_btn)
+        m1_restock_row.addWidget(self.case_restock_remove_btn)
+        m1_lay.addLayout(m1_restock_row)
         self.case_restock_feedback = QLabel("")
         self.case_restock_feedback.setStyleSheet(f"font-size:10px;font-weight:600;")
-        cb_lay.addWidget(self.case_restock_feedback)
+        m1_lay.addWidget(self.case_restock_feedback)
+        cb_lay.addWidget(self.case_mode1_frame)
+
+        # ── Mode 2 panel: shared pool ─────────────────────────────────
+        self.case_mode2_frame = QFrame(); self.case_mode2_frame.setVisible(False)
+        self.case_mode2_frame.setStyleSheet("background:transparent;border:none;")
+        m2_lay = QVBoxLayout(self.case_mode2_frame); m2_lay.setContentsMargins(0,4,0,0); m2_lay.setSpacing(6)
+        # Case group picker + inline create
+        m2_lay.addWidget(self._flabel("Case Group"))
+        m2_grp_row = QHBoxLayout(); m2_grp_row.setSpacing(6)
+        self.f_case_group_combo = QComboBox()
+        self.f_case_group_combo.setStyleSheet(self._input_style())
+        self.f_case_group_combo.setMinimumHeight(32)
+        self.f_case_group_combo.currentIndexChanged.connect(self._on_case_group_changed)
+        m2_grp_row.addWidget(self.f_case_group_combo, stretch=1)
+        new_grp_btn = QPushButton("＋")
+        new_grp_btn.setFixedSize(32, 32)
+        new_grp_btn.setToolTip("Create a new case group")
+        new_grp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        new_grp_btn.setStyleSheet(
+            f"QPushButton{{background:{AMBER};color:white;border:none;"
+            f"border-radius:6px;font-size:16px;font-weight:700;}}"
+            f"QPushButton:hover{{background:{AMBER_DARK};}}")
+        new_grp_btn.clicked.connect(self._create_case_group)
+        m2_grp_row.addWidget(new_grp_btn)
+        m2_lay.addLayout(m2_grp_row)
+        # Group info: cost, price, pool stock
+        self.case_grp_info_lbl = QLabel("")
+        self.case_grp_info_lbl.setStyleSheet(f"color:{MUTED};font-size:10px;")
+        self.case_grp_info_lbl.setWordWrap(True)
+        m2_lay.addWidget(self.case_grp_info_lbl)
+        # Units per case (shared with mode 1 spinbox but shown here too)
+        m2_lay.addWidget(self._flabel("Units per Case (for this product)"))
+        self.f_case_qty2 = QSpinBox(); self.f_case_qty2.setMinimum(1); self.f_case_qty2.setMaximum(9999)
+        self.f_case_qty2.setStyleSheet(self._input_style())
+        m2_lay.addWidget(self.f_case_qty2)
+        # Pool restock
+        m2_lay.addWidget(_divider())
+        m2_lay.addWidget(self._flabel("Restock Pool"))
+        self.pool_stock_lbl = QLabel("Select a case group to see pool stock.")
+        self.pool_stock_lbl.setStyleSheet(f"color:{DARK_CARD};font-size:11px;font-weight:600;")
+        self.pool_stock_lbl.setWordWrap(True)
+        m2_lay.addWidget(self.pool_stock_lbl)
+        m2_restock_row = QHBoxLayout(); m2_restock_row.setSpacing(6)
+        self.pool_restock_qty = QSpinBox()
+        self.pool_restock_qty.setMinimum(1); self.pool_restock_qty.setMaximum(9999)
+        self.pool_restock_qty.setStyleSheet(self._input_style())
+        m2_restock_row.addWidget(self.pool_restock_qty, stretch=1)
+        self.pool_restock_add_btn = QPushButton("＋  Add to Pool")
+        self.pool_restock_add_btn.setFixedHeight(30); self.pool_restock_add_btn.setEnabled(False)
+        self.pool_restock_add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pool_restock_add_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{GREEN};border:1.5px solid {GREEN};"
+            f"border-radius:6px;font-size:11px;font-weight:700;padding:0 8px;}}"
+            f"QPushButton:hover{{background:{GREEN};color:white;}}"
+            f"QPushButton:disabled{{color:{MUTED};border-color:{BORDER_LIGHT};}}")
+        self.pool_restock_add_btn.clicked.connect(self._pool_restock_add)
+        self.pool_restock_remove_btn = QPushButton("−  Remove")
+        self.pool_restock_remove_btn.setFixedHeight(30); self.pool_restock_remove_btn.setEnabled(False)
+        self.pool_restock_remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pool_restock_remove_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{RED};border:1.5px solid {RED};"
+            f"border-radius:6px;font-size:11px;font-weight:700;padding:0 8px;}}"
+            f"QPushButton:hover{{background:{RED};color:white;}}"
+            f"QPushButton:disabled{{color:{MUTED};border-color:{BORDER_LIGHT};}}")
+        self.pool_restock_remove_btn.clicked.connect(self._pool_restock_remove)
+        m2_restock_row.addWidget(self.pool_restock_add_btn)
+        m2_restock_row.addWidget(self.pool_restock_remove_btn)
+        m2_lay.addLayout(m2_restock_row)
+        self.pool_restock_feedback = QLabel("")
+        self.pool_restock_feedback.setStyleSheet(f"font-size:10px;font-weight:600;")
+        m2_lay.addWidget(self.pool_restock_feedback)
+        cb_lay.addWidget(self.case_mode2_frame)
 
         lay.addWidget(self.case_box)
 
@@ -537,11 +623,17 @@ class SupervisorWindow(BaseWindow):
         self.t_gct.setChecked(True); self.t_case.setChecked(False)
         self.f_price.clear(); self.f_price_hint.clear()
         self.stock_section.setVisible(False)
+        # Mode 1 reset
         self.f_case_parent.clear_value()
         self.f_case_parent.exclude_id(None)
         self.f_case_cost_hint.setText("")
         self.case_restock_qty.setValue(1)
         self.case_restock_feedback.setText("")
+        # Mode 2 reset
+        self.case_mode_linked.setChecked(True)
+        self.f_case_qty2.setValue(1)
+        self.pool_restock_qty.setValue(1)
+        self.pool_restock_feedback.setText("")
         self.f_group.setEnabled(True)
         self.f_group.setToolTip("")
 
@@ -557,19 +649,30 @@ class SupervisorWindow(BaseWindow):
         self.t_gct.setChecked(bool(p["gct_applicable"]))
         self.t_case.setChecked(bool(p["is_case"]))
         if p["is_case"]:
-            if p.get("case_qty"):
-                self.f_case_qty.setValue(p["case_qty"])
-            self._populate_case_parents(select_id=p.get("case_product_id"))
-            # Lock group if a parent is linked, otherwise leave it editable
-            if p.get("case_product_id"):
-                self.f_group.setEnabled(False)
-                self.f_group.setToolTip(
-                    "Group is inherited from the parent single product.\n"
-                    "Change the parent to change the group."
-                )
-            else:
+            is_pool = bool(p.get("case_group_id"))
+            # Set mode toggle before populating panels
+            self.case_mode_linked.setChecked(not is_pool)
+            self.case_mode_pool.setChecked(is_pool)
+            if is_pool:
+                # Mode 2 — shared pool
+                self.f_case_qty2.setValue(p.get("case_qty") or 1)
+                self._populate_case_group_combo(select_id=p.get("case_group_id"))
                 self.f_group.setEnabled(True)
                 self.f_group.setToolTip("")
+            else:
+                # Mode 1 — linked to specific parent
+                if p.get("case_qty"):
+                    self.f_case_qty.setValue(p["case_qty"])
+                self._populate_case_parents(select_id=p.get("case_product_id"))
+                if p.get("case_product_id"):
+                    self.f_group.setEnabled(False)
+                    self.f_group.setToolTip(
+                        "Group is inherited from the parent single product.\n"
+                        "Change the parent to change the group."
+                    )
+                else:
+                    self.f_group.setEnabled(True)
+                    self.f_group.setToolTip("")
         for i in range(self.f_group.count()):
             if self.f_group.itemData(i) == p.get("group_id"):
                 self.f_group.setCurrentIndex(i); break
@@ -624,19 +727,36 @@ class SupervisorWindow(BaseWindow):
         variant_group_id = self.f_variant_group.selected_id()
 
         is_case         = self.t_case.isChecked()
-        case_product_id = self.f_case_parent.selected_id() if is_case else None
-        case_qty        = self.f_case_qty.value() if is_case else None
+        is_pool_mode    = is_case and self.case_mode_pool.isChecked()
+        case_group_id   = self.f_case_group_combo.currentData() if is_pool_mode else None
+        case_product_id = self.f_case_parent.selected_id() if (is_case and not is_pool_mode) else None
+        # Each mode uses its own case_qty spinbox
+        if is_case:
+            case_qty = self.f_case_qty2.value() if is_pool_mode else self.f_case_qty.value()
+        else:
+            case_qty = None
 
-        # If a parent is linked, derive cost from it
+        # Mode 1 — derive cost from linked parent single product
         if is_case and case_product_id:
             parent = get_product_by_id(case_product_id)
             if parent and parent["cost"] > 0:
                 cost = round(parent["cost"] * (case_qty or 1), 4)
                 self.f_cost[1].setText(str(cost))
 
-        selling_price = self._get_selling_price(cost, group_id)
-        # For linked cases use case_profit_pct instead of group margin
-        if is_case and case_product_id:
+        # Mode 2 — derive cost + price from the case group row
+        if is_pool_mode and case_group_id:
+            g = get_case_group_by_id(case_group_id)
+            if g:
+                cost          = g["cost"]
+                selling_price = g["selling_price"]
+                self.f_cost[1].setText(str(cost))
+            else:
+                selling_price = self._get_selling_price(cost, group_id)
+        else:
+            selling_price = self._get_selling_price(cost, group_id)
+
+        # Mode 1 linked cases use case_profit_pct instead of group margin
+        if is_case and case_product_id and not is_pool_mode:
             from core.db_config import get as cfg_get
             try:
                 pct = float(cfg_get("case_profit_pct", "0.10"))
@@ -659,6 +779,7 @@ class SupervisorWindow(BaseWindow):
             is_case=int(is_case),
             case_qty=case_qty,
             case_product_id=case_product_id,
+            case_group_id=case_group_id,
             discount_level1=disc1_id,
             discount_level2=disc2_id,
         )
@@ -805,24 +926,33 @@ class SupervisorWindow(BaseWindow):
                 "No case products found with a linked single product and cost > 0."
             )
 
+    # ── Case toggle + mode switch ─────────────────────────────────────────────
+
     def _on_case_toggled(self, state):
         self.case_box.setVisible(bool(state))
         if bool(state):
             self.f_case_parent.exclude_id(self._editing_product_id)
-            # Case products don't hold their own stock — the generic
-            # per-product Stock Adjustment section below doesn't apply;
-            # "Restock via Case" in the case panel above replaces it.
             self.stock_section.setVisible(False)
-            self._refresh_case_stock_lbl()
+            self._populate_case_group_combo()
+            self._on_case_mode_changed()
         else:
-            # Case turned off — unlock group picker and clear parent
             self.f_case_parent.clear_value()
             self.f_case_cost_hint.setText("")
             self.f_group.setEnabled(True)
             self.f_group.setToolTip("")
-            # Restore the generic stock section if we're editing an
-            # existing (non-case) product.
             self.stock_section.setVisible(bool(self._editing_product_id))
+
+    def _on_case_mode_changed(self):
+        """Switch between Mode 1 (linked) and Mode 2 (shared pool) panels."""
+        linked = self.case_mode_linked.isChecked()
+        self.case_mode1_frame.setVisible(linked)
+        self.case_mode2_frame.setVisible(not linked)
+        if linked:
+            self._on_case_parent_changed()
+        else:
+            self._on_case_group_changed()
+
+    # ── Mode 1 helpers ────────────────────────────────────────────────────────
 
     def _populate_case_parents(self, select_id: int = None):
         """Restore a saved parent selection when editing."""
@@ -834,10 +964,8 @@ class SupervisorWindow(BaseWindow):
         """Update cost hint and inherit group from parent when a parent is selected."""
         parent_id = self.f_case_parent.selected_id()
         qty = self.f_case_qty.value()
-
         if parent_id is None:
             self.f_case_cost_hint.setText("Cost will be set manually from the Cost field above.")
-            # Re-enable group picker — case has no parent so it manages its own group
             self.f_group.setEnabled(True)
             self.f_group.setToolTip("")
         else:
@@ -848,12 +976,10 @@ class SupervisorWindow(BaseWindow):
                     f"Cost = ${parent['cost']:.4f} × {qty} = ${derived:.4f}  "
                     f"(auto-set on save)"
                 )
-                # Inherit parent's group and lock the picker
                 parent_group = parent.get("group_id")
                 for i in range(self.f_group.count()):
                     if self.f_group.itemData(i) == parent_group:
-                        self.f_group.setCurrentIndex(i)
-                        break
+                        self.f_group.setCurrentIndex(i); break
                 self.f_group.setEnabled(False)
                 self.f_group.setToolTip(
                     "Group is inherited from the parent single product.\n"
@@ -864,8 +990,6 @@ class SupervisorWindow(BaseWindow):
         self._refresh_case_stock_lbl()
 
     def _refresh_case_stock_lbl(self):
-        """Show the parent's current stock as case-equivalent units, and
-        enable/disable the case-restock buttons accordingly."""
         parent_id = self.f_case_parent.selected_id()
         qty = self.f_case_qty.value() or 1
         if not parent_id:
@@ -907,6 +1031,97 @@ class SupervisorWindow(BaseWindow):
         self.case_restock_feedback.setStyleSheet(f"color:{AMBER_DARK};font-size:10px;font-weight:600;")
         self.case_restock_feedback.setText(
             f"✓  Removed {cases} case{'s' if cases != 1 else ''} ({units} units) from parent stock.")
+
+    # ── Mode 2 helpers ────────────────────────────────────────────────────────
+
+    def _populate_case_group_combo(self, select_id: int = None):
+        self.f_case_group_combo.blockSignals(True)
+        self.f_case_group_combo.clear()
+        self.f_case_group_combo.addItem("— Select case group —", None)
+        for g in get_case_groups():
+            self.f_case_group_combo.addItem(g["name"], g["id"])
+            if g["id"] == select_id:
+                self.f_case_group_combo.setCurrentIndex(self.f_case_group_combo.count() - 1)
+        self.f_case_group_combo.blockSignals(False)
+        self._on_case_group_changed()
+
+    def _on_case_group_changed(self):
+        gid = self.f_case_group_combo.currentData()
+        if not gid:
+            self.case_grp_info_lbl.setText("")
+            self.pool_stock_lbl.setText("Select a case group to see pool stock.")
+            self.pool_restock_add_btn.setEnabled(False)
+            self.pool_restock_remove_btn.setEnabled(False)
+            return
+        g = get_case_group_by_id(gid)
+        if not g: return
+        self.case_grp_info_lbl.setText(
+            f"Cost: ${g['cost']:.4f}   Selling price: ${g['selling_price']:.2f}"
+            f"   Case qty: {g['case_qty'] or '—'}"
+        )
+        pool = g["pool_stock"]
+        self.pool_stock_lbl.setText(
+            f"Pool stock: {pool} case{'s' if pool != 1 else ''} available")
+        self.pool_restock_add_btn.setEnabled(True)
+        self.pool_restock_remove_btn.setEnabled(True)
+        self.pool_restock_feedback.setText("")
+
+    def _create_case_group(self):
+        """Inline dialog to create a new case group."""
+        dlg = QDialog(self); dlg.setWindowTitle("New Case Group")
+        dlg.setMinimumWidth(320)
+        lay = QVBoxLayout(dlg); lay.setSpacing(10); lay.setContentsMargins(16,16,16,16)
+        lay.addWidget(QLabel("Group Name"))
+        name_edit = QLineEdit(); name_edit.setPlaceholderText("e.g. SPRITE 330ML CASES")
+        name_edit.setStyleSheet(self._input_style()); name_edit.setFixedHeight(34)
+        lay.addWidget(name_edit)
+        lay.addWidget(QLabel("Units per Case"))
+        qty_spin = QSpinBox(); qty_spin.setMinimum(1); qty_spin.setMaximum(9999); qty_spin.setValue(24)
+        qty_spin.setStyleSheet(self._input_style()); qty_spin.setFixedHeight(34)
+        lay.addWidget(qty_spin)
+        lay.addWidget(QLabel("Cost per Case ($)"))
+        cost_edit = QLineEdit("0.00"); cost_edit.setStyleSheet(self._input_style()); cost_edit.setFixedHeight(34)
+        lay.addWidget(cost_edit)
+        lay.addWidget(QLabel("Selling Price per Case ($)"))
+        price_edit = QLineEdit("0.00"); price_edit.setStyleSheet(self._input_style()); price_edit.setFixedHeight(34)
+        lay.addWidget(price_edit)
+        btn_row = QHBoxLayout()
+        cancel_btn = QPushButton("Cancel"); cancel_btn.clicked.connect(dlg.reject)
+        save_btn   = QPushButton("Create"); save_btn.clicked.connect(dlg.accept)
+        save_btn.setStyleSheet(self._accent_btn())
+        btn_row.addWidget(cancel_btn); btn_row.addWidget(save_btn)
+        lay.addLayout(btn_row)
+        if dlg.exec() != QDialog.DialogCode.Accepted: return
+        name = name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Required", "Group name is required."); return
+        try:
+            cost  = float(cost_edit.text() or 0)
+            price = float(price_edit.text() or 0)
+        except ValueError:
+            QMessageBox.warning(self, "Invalid", "Enter valid cost and price values."); return
+        new_id = add_case_group(name, qty_spin.value(), cost, price)
+        self._populate_case_group_combo(select_id=new_id)
+
+    def _pool_restock_add(self):
+        gid = self.f_case_group_combo.currentData()
+        if not gid: return
+        cases = self.pool_restock_qty.value()
+        adjust_case_group_stock(gid, cases, "Restock", self.user["id"])
+        self._on_case_group_changed()
+        self.pool_restock_feedback.setStyleSheet(f"color:{GREEN};font-size:10px;font-weight:600;")
+        self.pool_restock_feedback.setText(
+            f"✓  Added {cases} case{'s' if cases != 1 else ''} to pool.")
+
+    def _pool_restock_remove(self):
+        gid = self.f_case_group_combo.currentData()
+        if not gid: return
+        cases = self.pool_restock_qty.value()
+        adjust_case_group_stock(gid, -cases, "Correction", self.user["id"])
+        self._on_case_group_changed()
+        self.pool_restock_feedback.setStyleSheet(f"color:{AMBER_DARK};font-size:10px;font-weight:600;")
+        self.pool_restock_feedback.setText(
+            f"✓  Removed {cases} case{'s' if cases != 1 else ''} from pool.")
 
     def _populate_groups(self):
         self.f_group.clear(); self.f_group.addItem("— No Group —", None)
