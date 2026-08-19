@@ -19,6 +19,8 @@ from core.db_products import (
     get_products, count_products, adjust_stock,
     get_all_stock_adjustments, get_low_stock_products,
     get_stock_adjustments, get_product_by_id,
+    get_case_groups, get_case_group_by_id,
+    adjust_case_group_stock, get_low_stock_case_groups,
 )
 from core.db_config import get_int
 from core.db_users import get_user_by_id
@@ -327,26 +329,165 @@ class StockTab(QWidget):
         splitter.setStretchFactor(0, 1); splitter.setStretchFactor(1, 1)
         root.addWidget(splitter, stretch=1)
 
+        # ── Case Pool section — hidden when no case groups exist ──────
+        self.pool_section = QFrame()
+        self.pool_section.setStyleSheet(
+            f"QFrame{{background:{WHITE};border:1px solid {BORDER};border-radius:10px;}}"
+        )
+        pl = QVBoxLayout(self.pool_section)
+        pl.setContentsMargins(12, 10, 12, 10); pl.setSpacing(8)
+
+        pool_hdr = QHBoxLayout()
+        pool_title = QLabel("📦  Case Pool Stock")
+        pool_title.setStyleSheet(f"color:{DARK_CARD};font-size:13px;font-weight:700;background:transparent;")
+        pool_hdr.addWidget(pool_title)
+        pool_hdr.addStretch()
+        self.pool_refresh_btn = QPushButton("↻  Refresh")
+        self.pool_refresh_btn.setFixedHeight(26)
+        self.pool_refresh_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.pool_refresh_btn.setStyleSheet(
+            f"QPushButton{{background:transparent;color:{AMBER};border:1px solid {AMBER};"
+            f"border-radius:5px;font-size:11px;font-weight:600;padding:0 10px;}}"
+            f"QPushButton:hover{{background:{AMBER};color:white;}}"
+        )
+        self.pool_refresh_btn.clicked.connect(self._load_pool_table)
+        pool_hdr.addWidget(self.pool_refresh_btn)
+        pl.addLayout(pool_hdr)
+
+        self.pool_table = QTableWidget(); self.pool_table.setColumnCount(5)
+        self.pool_table.setHorizontalHeaderLabels(
+            ["Group Name", "Case Qty", "Pool Stock", "Add Cases", "Remove Cases"]
+        )
+        ph = self.pool_table.horizontalHeader()
+        ph.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        ph.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        ph.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        ph.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        ph.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.pool_table.setColumnWidth(3, 140)
+        self.pool_table.setColumnWidth(4, 140)
+        self.pool_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.pool_table.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self.pool_table.verticalHeader().setVisible(False)
+        self.pool_table.setShowGrid(False)
+        self.pool_table.setMaximumHeight(200)
+        self.pool_table.setStyleSheet(self._table_style())
+        pl.addWidget(self.pool_table)
+
+        self.pool_section.setVisible(False)
+        root.addWidget(self.pool_section)
+
     # ── Data ──────────────────────────────────────────────────────────────────
 
     def _refresh_all(self):
         self._threshold = get_int("low_stock_threshold", 5)
         self._load_stock_table()
+        self._load_pool_table()
         self._refresh_alert()
 
     def _refresh_alert(self):
         low = get_low_stock_products(self._threshold)
-        if not low:
+        low_pool = get_low_stock_case_groups(self._threshold)
+        if not low and not low_pool:
             self.alert_frame.setVisible(False); return
         out  = [p for p in low if p["stock"] == 0]
         warn = [p for p in low if 0 < p["stock"] <= self._threshold]
         parts = []
-        if out:  parts.append(f"{len(out)} out of stock")
-        if warn: parts.append(f"{len(warn)} low (≤{self._threshold})")
-        names = ", ".join(p["name"] for p in low[:5])
-        if len(low) > 5: names += f"  +{len(low)-5} more"
+        if out:       parts.append(f"{len(out)} out of stock")
+        if warn:      parts.append(f"{len(warn)} low (≤{self._threshold})")
+        if low_pool:  parts.append(f"{len(low_pool)} case pool{'s' if len(low_pool) != 1 else ''} low")
+        names = ", ".join(p["name"] for p in low[:4])
+        if low_pool:
+            names += (", " if names else "") + ", ".join(g["name"] for g in low_pool[:2])
+        if len(low) + len(low_pool) > 5: names += f"  +{len(low)+len(low_pool)-5} more"
         self.alert_lbl.setText(f"{' · '.join(parts)}:  {names}")
         self.alert_frame.setVisible(True)
+
+    def _load_pool_table(self):
+        """Populate the Case Pool section. Hide section if no case groups exist."""
+        groups = get_case_groups()
+        if not groups:
+            self.pool_section.setVisible(False)
+            return
+        self.pool_section.setVisible(True)
+        self.pool_table.setRowCount(0)
+        C = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignHCenter
+
+        for row, g in enumerate(groups):
+            self.pool_table.insertRow(row)
+            self.pool_table.setRowHeight(row, 40)
+
+            name_item = QTableWidgetItem(g["name"])
+            name_item.setData(Qt.ItemDataRole.UserRole, g["id"])
+            self.pool_table.setItem(row, 0, name_item)
+
+            qty_item = QTableWidgetItem(str(g.get("case_qty") or "—"))
+            qty_item.setTextAlignment(C)
+            self.pool_table.setItem(row, 1, qty_item)
+
+            pool  = g.get("pool_stock", 0)
+            color = RED if pool == 0 else (AMBER_DARK if pool <= self._threshold else GREEN)
+            label = "Out" if pool == 0 else (f"{pool} ⚠" if pool <= self._threshold else str(pool))
+            si = QTableWidgetItem(label)
+            si.setForeground(QColor(color)); si.setTextAlignment(C)
+            f = QFont(); f.setBold(True); si.setFont(f)
+            self.pool_table.setItem(row, 2, si)
+
+            # Add Cases widget
+            add_w = QWidget(); add_l = QHBoxLayout(add_w)
+            add_l.setContentsMargins(4, 2, 4, 2); add_l.setSpacing(4)
+            add_spin = QSpinBox(); add_spin.setMinimum(1); add_spin.setMaximum(9999)
+            add_spin.setValue(1); add_spin.setFixedHeight(28)
+            add_spin.setStyleSheet(
+                f"QSpinBox{{background:{WHITE};border:1px solid {BORDER};"
+                f"border-radius:5px;padding:0 4px;font-size:11px;color:{DARK_CARD};}}"
+            )
+            add_btn = QPushButton("＋ Add")
+            add_btn.setFixedHeight(28)
+            add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            add_btn.setStyleSheet(
+                f"QPushButton{{background:transparent;color:{GREEN};"
+                f"border:1px solid {GREEN};border-radius:5px;"
+                f"font-size:11px;font-weight:700;padding:0 6px;}}"
+                f"QPushButton:hover{{background:{GREEN};color:white;}}"
+            )
+            gid = g["id"]
+            uid = self.user["id"]
+            add_btn.clicked.connect(
+                lambda _, gid=gid, sp=add_spin: self._pool_adjust(gid, sp.value(), uid)
+            )
+            add_l.addWidget(add_spin); add_l.addWidget(add_btn)
+            self.pool_table.setCellWidget(row, 3, add_w)
+
+            # Remove Cases widget
+            rem_w = QWidget(); rem_l = QHBoxLayout(rem_w)
+            rem_l.setContentsMargins(4, 2, 4, 2); rem_l.setSpacing(4)
+            rem_spin = QSpinBox(); rem_spin.setMinimum(1); rem_spin.setMaximum(9999)
+            rem_spin.setValue(1); rem_spin.setFixedHeight(28)
+            rem_spin.setStyleSheet(
+                f"QSpinBox{{background:{WHITE};border:1px solid {BORDER};"
+                f"border-radius:5px;padding:0 4px;font-size:11px;color:{DARK_CARD};}}"
+            )
+            rem_btn = QPushButton("− Remove")
+            rem_btn.setFixedHeight(28)
+            rem_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            rem_btn.setStyleSheet(
+                f"QPushButton{{background:transparent;color:{RED};"
+                f"border:1px solid {RED};border-radius:5px;"
+                f"font-size:11px;font-weight:700;padding:0 6px;}}"
+                f"QPushButton:hover{{background:{RED};color:white;}}"
+            )
+            rem_btn.clicked.connect(
+                lambda _, gid=gid, sp=rem_spin: self._pool_adjust(gid, -sp.value(), uid)
+            )
+            rem_l.addWidget(rem_spin); rem_l.addWidget(rem_btn)
+            self.pool_table.setCellWidget(row, 4, rem_w)
+
+    def _pool_adjust(self, group_id: int, delta: int, user_id: int):
+        reason = "Restock" if delta > 0 else "Correction"
+        adjust_case_group_stock(group_id, delta, reason, user_id)
+        self._load_pool_table()
+        self._refresh_alert()
 
     def _search(self):
         self._pg_page   = 0
